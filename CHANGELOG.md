@@ -1,0 +1,2806 @@
+# Changelog
+
+All notable changes to this project are documented here.
+
+This project is in **beta** despite its version number. Behavior may still change between
+releases.
+
+The app and the browser extension in `extension/` are versioned together. **Reload the
+extension after updating the app**. If their bridge protocols are incompatible,
+the app refuses the extension and asks you to reload the matching copy.
+
+## [2.1.48] — DeepSeek connection, planning and usage clarity
+
+- DeepSeek uses the built-in browser without a tunnel, provider connector or external browser extension.
+- Activity reports app updates and the actual DeepSeek sign-in state. Update all no longer starts legacy connector or tunnel work.
+- Planning waits for a mounted composer in an offscreen helper. Cancellation closes its page, and recognized failures explain the failed stage.
+- Usage labels its cached-input API cost comparison clearly. It does not read actual DeepSeek Web charges or API bills. Retired DeepSeek web model names use the Flash baseline unless an explicit comparison rate was saved.
+- Small positive cost comparisons retain their decimal precision.
+- Electron is pinned to 44.9.1 and Vite to 7.3.7 in the lockfile for their published security fixes.
+
+This is a beta release candidate. Native packages, fresh dependency installation and signed-in DeepSeek planning must pass their release checks before publication.
+
+Based on Chat On Steroids. Original contributors retain their credit in CONTRIBUTORS.md and the MIT license.
+
+## [2.1.47] — Scheduled runs, changed files under each answer, commit and pull request from Review, and your own chat style
+
+A chat can send itself a message on a schedule. Each answer that edited files shows what changed. Review can commit, push and open a pull request. And you can rewrite how ChatGPT talks and writes in new chats.
+
+### 👉 After updating
+
+- Nothing to do. The browser extension updates itself once no chat is busy.
+
+### ✨ New
+
+- **Scheduled runs.** A chat can send a message by itself on a schedule: every few hours, daily, on weekdays or weekly (chat menu ⋯ → Schedule…). Times missed while the app was closed are skipped unless you turn on catching up.
+- **Changed files under each answer.** An answer that edited files shows a short "Changed files" line. Open it to see each file's changes, or go to Review.
+- **Commit and pull request from Review.** Choose the files, edit the suggested message, and optionally push and open a pull request.
+- **Code checkpoints.** Review can compare with an automatic checkpoint taken before each turn's first edit, and restore files from it.
+- **Your own chat style.** Settings → Agents & automation → Chat instructions lets you rewrite the Personality and Writing style of new chats, or leave either out. Tools and permissions stay as they are.
+- **Link an existing ChatGPT Project.** When you add a folder, you can link it to a ChatGPT Project you already have. Change or unlink it later from the project's menu.
+- **Share a chat as a web page.** Chat menu → Share as web page (or /share). You see the page before saving. Keys are always hidden, and email addresses and user names are hidden unless you choose to show them.
+- **Sub-agents at a glance.** The Sub-agents dock shows one line per worker: what it is doing, its answer, or that it waits for you in ChatGPT.
+- **Quote from a reply.** Select words in a chat message and click Quote to add them to your message.
+- **Keyboard shortcuts.** Ctrl+/ (⌘/ on macOS) shows every shortcut, also under View → Keyboard shortcuts.
+- **Sounds.** Optional short sounds when a chat needs you, something fails, or a chat finishes in the background.
+- **Send feedback from the app.** Activity → Send feedback (or /feedback) opens GitHub's form with your text, version and system filled in.
+- **A short tour after Setup.** One minute: the composer's modes, projects and Review. Take it again from Settings → General.
+- **For developers: check automatic sends.** A program on your computer can be asked before each message the app sends by itself, and can hold it (Settings → General → For developers).
+
+### 💪 Better
+
+- **Less disk space for chat recordings:** screenshots are stored about half the size, with exactly the same image.
+- **Less CPU while the app sits idle.**
+- **Diagnostics reports** say how long the app took to start, beside your earlier starts.
+- **Cards and charts in replies** stay readable when you look at them later in the app.
+- **Tool calls in a chat that runs in the background** show up in that chat more reliably, instead of under "Activity not attributed".
+- **When OpenAI doesn't know a tunnel ID,** the app says so, and the health check also tests the Plugins and Desktop tunnels.
+
+### 🛠 Fixed
+
+- **The Plugins connection can be turned off** in Plugin setup when you don't use it, so its warning goes away.
+- **The Plugins connector** can be added to ChatGPT again when a plugin declares a preview widget.
+- **Tool calls whose request id differs in one digit** are now matched to their chat.
+- **A switch you change in Settings** no longer flips back while it is being saved.
+- **Chats in the sidebar** show one tooltip, not two.
+- **On a ChatGPT page that isn't a chat** (such as a Dot), the extension popup says so instead of waiting.
+- **While ChatGPT waits for you to approve a tool,** the app no longer reloads that chat under the approval card; the chat says it waits for the card instead.
+- **A finished Goal** still says "Goal reached" after the app restarts, instead of "Pursuing goal".
+- **A chat whose answer ChatGPT stopped showing** (for example while ChatGPT limits loading its history) now offers Stop, so your next message can go out.
+- **A new file in Review and in the edit cards** no longer shows an empty extra line under its content.
+- **With Goal response source set to Offline,** Goal again recognizes its continue or complete marker in answers that used tools.
+
+## [2.1.46] — Phone notifications, a settings backup, keys kept from ChatGPT, and high contrast
+
+Get a note on your phone when a chat needs you, move your settings to another computer, and keep API keys and tokens out of what ChatGPT sees. Appearance gains high contrast, accent colors, line spacing and a more legible font.
+
+### 👉 After updating
+
+- Nothing to do. The browser extension updates itself once no chat is busy.
+
+### ✨ New
+
+- **Phone notifications.** Chat On Steroids can tell you on your phone, through the free ntfy app, when a chat needs you, something fails, or a long chat finishes. Settings → General → Phone notifications. Off until you turn it on.
+- **Settings backup.** Settings → General → Backup exports your settings to a file and imports them on another computer. Saved keys go in only if you choose, locked with a passphrase, and the import shows what it will change first.
+- **Keys stay on your computer.** When a tool's output contains an API key, a token, a private key or a password, Chat On Steroids hides it before ChatGPT sees it. You can turn this off in Settings, or for one project from its ⋯ menu.
+- **High contrast and accent colors.** Appearance has High contrast (black or white background, stronger text and lines) and eight accent colors that read well in light and dark.
+- **Easier reading.** Appearance also has a line spacing slider, the Atkinson Hyperlegible font, and an option to have your screen reader announce finished replies.
+- **Merge conflicts in Review.** A conflicted file shows its base, ours and theirs side by side, and Review can ask the chat to resolve it.
+- **A whole chat as one web page.** The export menu under an answer saves the chat as one HTML file anyone can open. Keys and tokens in it are hidden.
+
+### 💪 Better
+
+- **Tool calls answer sooner.** Chat On Steroids no longer saves a chat's summary before every tool result.
+- **Fewer "Suspicious instruction" cards from ChatGPT.** The app's own connector text now states facts only, so ChatGPT's check stops reading it as an instruction to the model.
+- **The bundled OpenAI tunnel client** is updated to v0.0.18.
+- **After a restart or update,** a message to an existing chat goes out as soon as the connection has really moved over, and the app learns how long this computer needs, instead of waiting about two minutes.
+- **The context meter** fills toward the point where the chat compacts (or toward the large-chat warning when automatic compaction is off), instead of a limit that moved with your settings.
+- **Sidebar menus** no longer cut off longer labels in other languages, and the empty side panel shows its shortcut keys in your language.
+- **Diagnostics reports** say whether each ChatGPT tab was visible and how long it was hidden, which helps with chats that run in the background.
+
+### 🛠 Fixed
+
+- **A chat whose page stopped responding** no longer says "Working for …" for hours. It says it stopped and how to continue.
+- **A chat whose ChatGPT answer stream broke** could stay stuck, because every recovery was taken for progress. It now recovers.
+- **Compact & Resume** no longer gives up on a handoff that contains a link ChatGPT shows as a rich preview, such as a Google Drive folder.
+- **A new chat in a project whose ChatGPT Project was deleted** now says so and offers Retry, instead of waiting without a word.
+- **Core plugin checks** work when more than one valid ChatGPT connector identity exists for the app.
+- **Calling sub-agents from an app without a ChatGPT chat** (such as Codex) now gets a clear answer, instead of starting workers it can never hear back from.
+- **When an automatic Continue cannot be sent,** the activity log says why.
+- **With the built-in browser chosen,** a sub-agent chat could open in another browser that still had the main chat open, and never start there. It now opens in the built-in browser.
+- **ChatGPT's approval card in the app** ran each shared value into its label (for example "Access keysk-…"). Label and value are now kept apart.
+- **The "Saved" message** reads naturally in German, French and Portuguese.
+
+## [2.1.45] — Chat groups, bookmarks, drafts that wait for you, and a better Review
+
+Sort a project's chats into groups, bookmark answers to find them again, and see at a glance which chats hold an unsent message. Review can add files to .gitignore, Compact & Resume works on the Free plan, and ChatGPT asks for permission less often.
+
+### 👉 After updating
+
+- Nothing to do. The browser extension updates itself once no chat is busy.
+
+### ✨ New
+
+- **Chat groups.** A project's ⋯ menu has **New group**. Move a chat into a group from its own ⋯ menu (**Move to group**), drag groups into the order you like, and rename or delete a group from its menu. Deleting a group keeps its chats in the project.
+- **Bookmarks.** Every finished answer has a bookmark button next to Copy. Once a chat has bookmarks, its header shows them with a count; pick one to jump back to that answer.
+- **Drafts that wait for you.** A chat with a half-written message shows a small pencil in the sidebar, and drafts come back after a restart or an update.
+- **Review: add to .gitignore.** Right-click an untracked file to add it, or its folder, to .gitignore.
+- **Code blocks** show their language, wrap long lines on request, and can be saved as a file.
+- **Terminal:** select output and send it to the message box as a code block. Terminal tabs come back after a restart; press **Start shell here** to open one again.
+- **Usage by project, and as a file.** Settings → Usage shows how much went to each project, and **Export CSV** saves the page as a spreadsheet.
+- **Mark all as seen.** One click clears every "New response" dot, or just one project's from its menu.
+- **Check Goal's "done" yourself.** Settings → Agents & automation → **Review Goal completion** (off by default) keeps a chat waiting for you when Goal says the work is finished, instead of ending on its own.
+
+### 💪 Better
+
+- **Fewer permission prompts from ChatGPT.** ChatGPT asked to approve some Chat On Steroids commands even with "Allow all", flagging the app's own connector text as a "Suspicious instruction". That text is now plain facts, and in our tests the prompts stopped.
+- **Goal and Loop keep your original request in mind.** Their helper now also sees the first message of the chat (shortened if it is very long), so requirements from the start aren't lost in long chats.
+- **Chats you start on chatgpt.com inside a linked Project** now show up in their Chat On Steroids project.
+- **Windows: Store apps take clicks and typing** (such as Calculator or Settings) while the Chat On Steroids window is in front.
+- **Illustrations ChatGPT draws** now show in the app's copy of an answer. Only ChatGPT's own image server is allowed.
+- **The connection to ChatGPT starts more reliably.** The bundled OpenAI tunnel client is updated to v0.0.17. When starting, it now retries short failures instead of giving up.
+- **More of the app speaks your language.** About 70 error messages showed in English in every language: /copy and Export, bookmarks, the SSH project dialog, setup profiles, the terminal, attachments, Git Review and secure storage.
+
+### 🛠 Fixed
+
+- **Compact & Resume on the Free plan** gave up before sending, because ChatGPT shows no model picker there. The new chat now starts on ChatGPT's current model.
+- **Windows: automatic refresh of the Desktop connector** never finished, because its tool list was larger than the app expected. It now confirms like the others.
+- **Windows: apps opened by the desktop tools stay open** when the app restarts its desktop helper. Before, they closed with it.
+- **PowerShell commands that print a table** (such as `Get-Location` or `Select-Object`) returned nothing, and a batch of commands could lose all of its output.
+- **A new chat waiting for its first message** was shown as "blocked · not a chat" under Unattributed activity. It now shows as a normal chat in its project.
+- **A new chat's first message after its project was removed** waited without saying why. It now says to add the folder again or cancel the message.
+- **A bookmark whose answer is no longer in the chat** can be removed: opening it removes it and says so.
+- **A message to a chat whose ChatGPT tab was closed** could wait 15 minutes and then say it "may already have been sent", without being sent. It now goes out.
+
+## [2.1.44] — Pictures with /image, keyboard shortcuts, and a quicker message after Stop
+
+Type /image to ask ChatGPT for a picture, move around with new keyboard shortcuts, and copy, export or search a chat from the message box. A message you send right after pressing Stop now goes out at once, and finished sub-agent chats can tidy themselves away.
+
+### 👉 After updating
+
+- Nothing to do. The browser extension updates itself once no chat is busy.
+
+### ✨ New
+
+- **Ask for a picture with /image.** Start a message with /image (or pick it from the / menu) and ChatGPT draws it with its own image tool, without Chat On Steroids in the way.
+- **Keyboard shortcuts.** Ctrl+N (⌘N on macOS) starts a new chat, Ctrl+, (⌘,) opens Settings, Ctrl+Tab and Ctrl+Shift+Tab open the next and previous chat, and Esc pressed twice in an empty message box stops the running answer.
+- **/copy, /export and /find.** Copy the newest answer, save the chat as Markdown, or search it, straight from the message box.
+- **Copy a formula.** Right-click a formula in an answer to copy it as LaTeX or MathML.
+- **Hold to dictate on Windows.** Hold Ctrl+Shift+Space in the message box to dictate, and let go to stop.
+- **Your own words for Continue.** Settings → Agents & automation lets you set the text of the automatic Continue that picks up an unfinished answer.
+- **Sidebar layout pictures in your language.** The Projects and Inbox pictures in Settings → Appearance now show your language, in light and dark.
+- **Worker slots at a glance.** The Sub-agents panel shows how many of a chat's worker slots are busy, as in "Active · 2 / 3".
+- **Experimental: stop and continue when ChatGPT offers no Send.** For long Goal and Loop work in chats where ChatGPT shows only Stop, the app can stop the turn right after a result and continue in a fresh one. Off by default; Settings → Agents & automation, under "Start a fresh turn after".
+
+### 💪 Better
+
+- **A message right after Stop goes out at once.** Before, it could wait up to three minutes (ten with Pro models) after ChatGPT had already stopped.
+- **Finished sub-agent chats tidy themselves away.** With "Archive worker chats in ChatGPT when their task is done" on (Settings → Agents & automation), a worker's chat is archived two minutes after it reports its task done, and brought back if the main chat needs it again.
+- **Your own tunnel keeps working across restarts.** "Keep plugin URLs across restarts" now keeps the local port too. If another program has taken that port, the setting tells you which port to point your tunnel at instead.
+- **A sub-agent that needs you shows on its chat** in the sidebar, even while its sub-agents are folded away.
+- **Slow-starting sub-agents keep going.** On a busy computer, a new sub-agent whose first commands arrive early is told to try again in a moment instead of giving up.
+- **Gentler recovery while a page loads.** When a chat's page is still loading, recovery waits 20 seconds before trying again instead of reloading it over and over.
+
+### 🛠 Fixed
+
+- **Chats outside a sub-agent run aren't asked for a folder.** A chat's first command was refused with "choose a folder" whenever a sub-agent run was going on in another chat.
+- **A refused chat stays refused.** ChatGPT no longer runs the command through another computer's Chat On Steroids instead.
+- **"Trust only selected chats"** now tells you where to trust a chat (its ⋯ menu in the sidebar), in your language.
+- **Emptying a number field** in Agents & automation keeps the old value instead of jumping to the minimum, such as a 10,000-token Compact & Resume threshold.
+- **/goal or /rename** typed at the start of a message now also runs when you send it with Cmd/Ctrl+Shift+Enter during an answer.
+- **Pressing Stop when the browser can't be opened** no longer shows an error. The Stop still reaches ChatGPT once the browser connects.
+
+## [2.1.43] — See what sub-agents do, long work that keeps going, and clearer Settings
+
+Opening a sub-agent now shows what it did: each action with its result and the files it changed. Compact & Resume steps in during long answers again, and Goal and Loop chats continue long turns in a fresh one. Settings use plainer words throughout, and you pick the sidebar layout from a picture.
+
+### 👉 After updating
+
+- Nothing to do. The browser extension updates itself once no chat is busy. In Firefox the add-on of this release is numbered 2.1.43.1; it is the same build.
+
+### ✨ New
+
+- **See what a sub-agent does.** Open a sub-agent in the Sub-agents panel and its **Activity** comes first: its task, every action with its result, and the files it changed. Its conversation is one tab away, unchanged.
+- **Pick the sidebar layout from a picture.** Settings → Appearance → Sidebar layout shows the real Projects and Inbox sidebars side by side. Click one, or use the arrow keys.
+- **Meet Whip.** A cheeky new pet that cracks its whip so the work goes faster. It doesn't, but it tries.
+
+### 💪 Better
+
+- **Compact & Resume during long answers.** An automatic Compact & Resume steps in again while ChatGPT is still working, also in a chat's first answer, and tries again as soon as the page is readable after a moment it wasn't.
+- **Goal and Loop keep long turns going.** Like other chats, a Goal or Loop chat that has worked a long time continues in a fresh turn right after a tool result, without a second Goal or Loop message.
+- **Clearer Settings.** Plain words throughout. Agents & automation is regrouped: Goal and Loop settings together, a new **Chat access** section, and the worker list names the main chat and each worker.
+- **Chat names read properly.** A chat named after a long first message ends at a word with "…" instead of stopping mid-word.
+- **Tidier pages.** Plugin and pet cards line up with their neighbors, an empty Activity list says why it's empty, and Usage no longer shows empty boxes while it loads.
+- **Lighter waits before Compact & Resume.** While Chat On Steroids waits for ChatGPT to confirm the latest tool results, it checks every 2 seconds after the first 10 instead of four times a second, which matters most on slower computers.
+
+### 🛠 Fixed
+
+- **A queued message no longer waits forever** when the answer it waited for had already finished before you queued it.
+- **Prompt recall** (Up in an empty message box) no longer brings back a Goal opening that ChatGPT typed for you.
+- **The app log keeps writing** when Windows briefly blocks the log file, for example while another program has it open. No lines are lost.
+- **A stopped answer** shows a stop sign instead of a success check.
+- **Uninstalling a plugin** now asks with a Cancel button, like removing a skill.
+- **A chat that Compact & Resume replaced** now tells you which chat the work continues in, with a link, if you keep using it. Before, ChatGPT could only say that it could no longer use your computer.
+- **A tool approval card that ChatGPT redraws** no longer shows in the app as answered and then asked again.
+- **A tool approval request shows once.** After the app restarts while ChatGPT waits for your approval, the chat no longer shows the same request again, each with its own buttons.
+- **Asking for sprites, concept art or pixel art** gets you a picture. Before, ChatGPT could answer that its image tool was not available in this chat.
+- **Detailed generated pictures show in the app** instead of "image exceeds the recording limit", and Free storage is offered only where it helps.
+- **Screenshot only the active window** is offered on macOS only. On Windows every screenshot already shows one window, so the switch did nothing there.
+
+## [2.1.42] — Bring back earlier messages, smoother answers, and long work that keeps going
+
+Press Up in an empty message box to bring back what you asked before. Answers appear paragraph by paragraph instead of jumping while they're written. Long work moves on to a fresh turn without losing a result or running a command twice, and sub-agents start reliably even with a second browser around.
+
+### 👉 After updating
+
+- Nothing to do. The browser extension updates itself once no chat is busy.
+
+### ✨ New
+
+- **Bring back your earlier messages.** In an empty message box, press **Up** to bring back the last message you sent in this chat, and again for the one before. **Down** goes forward again, and past the newest one the box is empty. Only messages you typed come back, never the app's own Goal, Loop or fresh-turn messages. Nothing is sent until you send it.
+
+### 💪 Better
+
+- **Answers read calmly.** While ChatGPT writes, the answer shows whole paragraphs and fades each new one in, instead of jumping and reflowing with every word.
+- **Long work keeps going.** When a turn has run long, Chat On Steroids continues it in a fresh turn right after a tool result. That result is no longer lost and no command runs twice, in a new chat as well as later in a conversation. A message you send while ChatGPT is still answering no longer leaves the chat stuck afterwards.
+- **Sub-agents on slower computers.** The browser extension does far less work while sub-agents run, so their chats no longer wait on it.
+- **Compact & Resume says why it waits.** When an automatic Compact & Resume can't ask ChatGPT for the summary yet, the chat says so instead of "asking ChatGPT", and the app log records the reason.
+
+### 🛠 Fixed
+
+- **Sub-agents with two browsers.** With the extension in a second browser that isn't updated yet, sub-agents no longer fail to start because that browser opened their chats.
+- **Updating from an older Firefox add-on.** The update notice now tells you how to update it in Firefox, instead of asking for a reload from the app's folder.
+- **Goal follow-ups** no longer put a typo into a command or into a word ChatGPT is asked to reply with.
+
+## [2.1.41] — Edit your earlier messages, branch a chat, and sub-agents that start every time
+
+Change something you asked earlier and continue from there, or take a chat in a new direction from any answer without losing the original. Sort your chats in an optional Inbox. Sub-agents now start reliably even on a busy computer, and every count reads right in your language.
+
+### 👉 After updating
+
+- Nothing to do. The browser extension updates itself once no chat is busy.
+
+### ✨ New
+
+- **Edit your earlier messages.** Click the pencil (**Edit message**) on any message you sent, change it and send: the chat continues from your edited message, just like editing in ChatGPT. The composer tells you how many later messages your edit replaces. Nothing is thrown away: what came after the old version folds under your edit as **Earlier version**, one click away. Edits you make in ChatGPT itself show up the same way.
+- **Branch in new chat.** Answers have a **Branch in new chat** button (the branch icon next to Copy). It opens a new chat for your next message. Send it, and ChatGPT carries the conversation up to that answer into the new chat, so you can try another direction while the original chat stays exactly as it was. The new chat links back to where it came from.
+- **Inbox sidebar** (optional, **Settings → Appearance → Sidebar layout**). Lists all your chats together across projects, active chats first. **Projects** stays the default.
+- **Merge conflicts in Review.** Files with merge conflicts get their own group at the top of the Review panel, marked as conflicts instead of looking like ordinary changes.
+
+### 💪 Better
+
+- **Sub-agents start every time.** On a busy or slow computer, a worker used to be given up while its chat was actually starting, and then worked on without the main chat knowing. Now a worker that starts late simply rejoins its run, and the main chat is told not to redo its work. ChatGPT now rarely stops for a tool approval card when workers start, workers' replies reach the main chat right away even when your computer's clock is a little off, and when a worker does wait for you to allow a tool call, the main chat says so.
+- **Counts in your language.** "1 match" and "2 matches", and every language's own forms for one, a few and many. Russian, for example, has three.
+- **Find in chat** finds text the way the chat shows it, including bold, code and accented letters, and highlights the match you're on.
+- **Everything in your language.** File pickers and save dialogs (which now also say what they're for on the Mac), notifications, the Files panel's preview notes, and the errors from Files, projects, Skills, SSH projects and sessions all follow the app's language.
+- **Plans.** A chat started with Plan is named after your request and shows what you typed as its first message. Cancelling a ready plan gives your request back to the composer, and a request too long to plan says so before anything is sent.
+- **Compact & Resume** keeps the chat's session and its sub-agents together, even when ChatGPT takes a while to accept the handoff.
+- **Skills.** Up to 128 installed Skills, and Skills can be imported from GitHub branches whose name contains a slash.
+
+### 🛠 Fixed
+
+- **Line breaks in answers.** Poems, addresses and short lists keep their lines as in ChatGPT instead of running together.
+- **The Chat On Steroids button in ChatGPT's message box** is back when ChatGPT is set to a language other than English.
+- **Signed out of ChatGPT?** The app no longer sends messages into a signed-out ChatGPT page. It asks you to sign in instead.
+- **No more empty tabs.** Cancelling a new chat's first message, or a sub-agent that couldn't start, no longer leaves an empty ChatGPT page open.
+- **A finished chat** no longer repeats the model's first sentence under its answer.
+- **Automatic Continue.** When it can't find a safe moment to send, the chat says so in your language and tells you to send Continue yourself, instead of a cryptic note.
+- **Two browsers.** The update notice no longer comes and goes, and it names the browser whose extension is behind.
+- **Browser control** can use a tab Chrome unloaded in the background: it loads it again first instead of timing out.
+- **Writing blocks next to formulas.** An answer with both shows its writing panel with title and Copy button.
+- **Files panel.** All toolbar actions stay on screen in narrow panels and every language (as icons with tooltips when the labels don't fit), a file with a very long line says why it can't be previewed, and on Windows, files in SSH projects whose names Windows doesn't allow (like `a:b?.txt`) open and save.
+- **Folder names keep their letters.** "Größe" becomes "groesse" instead of "gr-e".
+- **Extension updates.** If a new chat's first message got lost on its way to ChatGPT, the browser extension no longer waits hours before updating itself. That message shows in its chat as "may already have been sent", with Retry and Dismiss.
+- **What's New** no longer pops up again after you change a setting.
+- **Typed commands.** `/goal`, `/plan`, `/loop` and the other app commands work when you type them at the start of a message, just like picking them from the menu. They used to fail as an unknown Skill.
+- **New response** no longer shows on a chat you have already read when ChatGPT redraws its answer, for example after you branch from it.
+- **The chat list stays put.** Collapsing project sections no longer shifts the chats sideways.
+- **Reduced motion.** With animations turned off in your system, a working chat shows a still ring instead of a spinner that looks stuck.
+- **Windows.** The app list no longer fails because of one unusual Start menu entry.
+- **Sub-agent checkouts.** Several sub-agents finishing in the same Git project at once no longer leave one of their checkouts behind.
+- **Smaller fixes.** Notices above the message box line up with its edges and short messages no longer cover it, the activity log stays readable with the update details open, slash commands can be found by the name the menu shows, notifications keep file names like `goal_r40.txt` intact, and the chat for unmatched activity is named in your language.
+
+## [2.1.40] — Projects on a server, Skills and files anywhere in the composer, and a repair for Mac permissions
+
+Projects can now live on a server you reach over SSH. In the composer, `/` offers your Skills and `@` your project's files anywhere in a message. On a Mac, Desktop access that an update left broken is repaired with one click.
+
+### 👉 After updating
+
+- Nothing to do. The browser extension updates itself once no chat is busy.
+
+### ✨ New
+
+- **Projects on a server (SSH).** Click **+** next to Projects, choose **Folder on a server (SSH)…**, and enter the server (for example `me@server` or a Host from your `~/.ssh/config`) and the folder. The app connects with your own SSH setup (config, agent, keys and known hosts; key login only) and installs nothing on the server. ChatGPT reads, searches, edits and runs commands in that folder, the folder's `AGENTS.md` comes along, and the terminal opens there. It works whatever login shell the server account uses, fish and tcsh included. Not in this first version: changing a server project's files from the Files panel (browsing, previews and Attach work), the Git panel, and separate checkouts for sub-agents.
+- **Skills and files anywhere in the composer.** `/` offers your installed Skills and `@` the files and folders of the chat's project at any point in a message, not only at the start. App commands such as `/goal` still work at the start.
+- **Prefer Plugins on app-sent messages** (**Settings → General**, off by default). Ordinary messages the app sends mention your Chat On Steroids Plugins app instead of Core. Goal, Loop, sub-agents and recovery keep Core.
+- **Local control API:** a message can choose its model and thinking level (`GET /v1/models` lists them).
+
+### 🛠 Fixed
+
+- **Adding a connector in ChatGPT.** On accounts where ChatGPT uses its newest connector protocol, adding a Chat On Steroids connector failed with "424 / Method not found". It works now; existing connectors were not affected.
+- **Windows line endings.** When ChatGPT edits a file with Windows line endings, the file keeps them instead of ending up with mixed line endings.
+- **Typing after a long paste.** Typing no longer stalls after pasting long text with many escaped spaces.
+- **Editing a queued message.** If the message was sent while you were editing it, your edit lands in the composer instead of being lost.
+- **Exit codes on Windows.** ChatGPT now sees a command's real exit code instead of 1 for every failure.
+- **Mac permissions after an update.** If Screen Recording or Accessibility stopped working after an update while System Settings still shows them as allowed, the app now says so in the chat and repairs it with one click (**Repair permissions**). The button also appears whenever a permission is missing.
+- **The "refresh the plugin" reminder.** Automatic plugin refresh works again for connectors set up with an older version, so the reminder no longer stays while automatic refresh is on. It also opens ChatGPT's current settings page instead of sometimes landing on Home.
+- **GPT-6 answers** show `|` and `&` as the model wrote them, instead of `&#124;` and `&amp;`.
+- **Usage page.** Codex's 5-hour and weekly limits are labeled as Codex, instead of looking like limits on your ChatGPT chats.
+- **Two browsers.** If one of them still has an older extension, new chats open in the up-to-date browser right away instead of waiting.
+- **"OpenAI outage" instead of "No internet"** when OpenAI's tunnel service fails, because your internet is fine then.
+- **Fresh turns.** After a long turn the app continued in a fresh turn, your next message goes out right away, and no leftover "Continue" blocks it. A continue that couldn't be sent stays at the time it was made, instead of sitting at the end of the chat.
+- **Mac: windows on another Space.** Observing a window on an inactive Space works again.
+- **Windows.** A command's exit status shows as the signed number Codex shows (for example −1 instead of 4294967295), and the key hints in Settings show only Ctrl shortcuts.
+- **Firefox.** New chats the app opens no longer occasionally lose their turn, which left Goal, Loop or queued messages waiting. When the add-on is behind the app, the notice says how Firefox updates it.
+- **Smaller fixes.** The diagnostics report's save dialog is titled in your language, the update details in **Activity** are spaced properly again, and a normal update no longer fills the log with warnings.
+
+## [2.1.39] — Fresh turns that work while ChatGPT thinks, and a fuller diagnostics report
+
+Long work continues in a fresh turn again, also while ChatGPT is thinking or running a tool. Chats the app opens stay out of incognito windows, and the diagnostics report now answers most questions about a problem by itself.
+
+### 👉 After updating
+
+- Nothing to do. The browser extension updates itself once no chat is busy.
+
+### 🛠 Fixed
+
+- **Fresh turns for long work.** In 2.1.38 the automatic continue often couldn't be sent. While ChatGPT is thinking or running a tool, it often shows only **Stop** and no **Send**, so the continue appeared in the chat as a failed message, every few minutes, and the long turn broke anyway. The app now stops the answer right after the tool result and sends the continue as the next message, so the work carries on in a fresh turn. A message you type yourself never stops an answer. If a turn can't be continued twice, the app leaves it alone instead of trying again and again.
+- **No chats in incognito windows.** If the extension is allowed in incognito and an incognito window was in front, a chat the app opened (for example a sub-agent's) landed there. ChatGPT is signed out there, so it failed over and over. Those chats now open in your regular window, or in a new regular window if only incognito ones are open.
+- **Settings stay when a value is unknown.** If a setting holds a choice this version doesn't know, for example after going back from a newer version, only that choice returns to its default instead of all your settings.
+
+### ✨ Improved
+
+- **A fuller diagnostics report** (**Activity → Diagnostics report**). Besides versions, connection and the log, it now also shows:
+  - how the app is installed and whether it can update itself;
+  - the computer's memory, processor, free disk space and uptime;
+  - crashes and restarts;
+  - the most frequent warnings since the app started;
+  - which tools were called in the last day and how often they failed;
+  - the state of each active chat, numbered instead of named;
+  - the browser and its ChatGPT tabs;
+  - which of ChatGPT's controls the extension still finds.
+
+  It still contains nothing personal: no names, folders, chat titles or text.
+- **Bug reports on GitHub** now ask for the diagnostics report and a check on the latest release, so we can usually help with the first answer.
+
+## [2.1.38] — Firefox, fresh turns for long work, and answering approvals from the app
+
+Firefox joins Chrome, Edge and Brave as a ChatGPT browser. Long work now continues in a fresh turn every 30 minutes, so it no longer breaks around the 40-minute mark. You can answer ChatGPT's tool approval cards right in the app. Updates gain one **Update all** button with a clear status for every part, and Usage now also shows Codex and Claude Code.
+
+### 👉 After updating
+
+- Nothing to do. The browser extension updates itself once no chat is busy.
+- If CoS asks you to refresh its plugins in ChatGPT, do so (or let **Automatic plugin refresh** do it): Core has a new `usage` tool.
+
+### ✨ Highlights
+
+- **Firefox.** Choose **Mozilla Firefox** as the ChatGPT browser in Setup or **Settings → Agents & automation → Browser & history**. The add-on is signed by Mozilla, installs with one click from Setup and updates itself through Firefox.
+- **Fresh turns for long work.** Turns that ran longer than about 35 minutes almost always broke (lost stream, "Message delivery timed out"), while stopping and continuing never did. Once a turn has run 30 minutes, the app now sends a short automatic continue right after the next tool result: ChatGPT ends the turn and carries on in a fresh one, and nothing is lost. Change or switch it off under **Settings → Agents & automation → Start a fresh turn after**. Pro models, Goal, Loop and sub-agents are left alone.
+- **Answer approval cards from the app.** When ChatGPT asks whether a plugin may run a tool, the waiting row in the app shows the card's own words with **Deny** and **Allow once**. One click answers exactly that card in the browser. The app never answers on its own, not for Goal or Loop either.
+- **Update all.** **Settings → Activity** shows the app, the browser extension and each plugin with its status, and one **Update all** button brings everything up to date. Restarting for an update asks first, with **Keep working** preselected.
+- **Codex and Claude Code in Usage.** **Settings → Usage → Other apps on this computer** shows Codex's 5-hour and weekly limits as Codex reported them, and the tokens Codex and Claude Code used, counted from their own logs on this computer. Only numbers are read, never what you wrote; you can switch it off. Ask "how much usage do I have left?" in a chat and Core answers with ChatGPT's and Codex's limits.
+- **Writing blocks you can copy.** ChatGPT's writing blocks (drafts, templates, e-mails) show as their own panel with a header and a **Copy** button.
+
+### 🛠 Fixed
+
+- **German ChatGPT errors.** "Verbindung unterbrochen. Warten auf die vollständige Antwort." and "Zeitüberschreitung bei der Übermittlung der Nachricht" are now recognized, so recovery continues the answer instead of reloading the page in a loop.
+- **Updates into a protected folder on Windows.** When the install folder needs an administrator, the app now asks Windows for permission instead of quietly not installing. If an update still didn't install, the app says so at the next start.
+- **When an update can't reach GitHub,** the app now says so and suggests checking your connection, instead of a bare "fetch failed".
+- **Worker wakes after a page that wasn't ready.** A worker whose page simply wasn't ready yet is woken again 15 seconds later instead of counting as failed.
+- **Plugins after a long tool call.** A tool call that runs past its time limit no longer takes the whole plugin offline.
+- **Two worktree changes at once** in the same repository no longer collide.
+- **A busy sidebar** with many projects and long histories no longer slows the app down on every update.
+- **A permission group with nothing switched on** now says so in your language instead of the English word "off".
+- **Long runs paused by a safety card.** ChatGPT's safety check sometimes flagged Core's command tool as a "Suspicious Instruction" and stopped the run on an approval card. The tool now describes itself plainly.
+- **Background chats in Firefox** are sent and confirmed much sooner, and their first answer reliably gets its turn, with **Copy** and **Export**.
+- **Built-in browser next to Chrome.** With the built-in browser chosen, new chats no longer open in a Chrome window that also has the extension.
+- **Tables with a copy button.** When ChatGPT draws a table with its own copy button, the app now shows every row, and **Copy** includes them.
+
+### ✨ Improved
+
+- **Plugin URLs that stay the same.** If you publish CoS through your own tunnel, **Settings → General → For developers → Keep plugin URLs across restarts** keeps each plugin's address, so ChatGPT keeps finding its tools after a restart.
+- **Longest call per plugin.** Each added plugin has its own **Longest call (seconds)**, from 1 second to 30 minutes.
+- **When the browser keeps the extension off ChatGPT,** Setup says so and shows where to allow it.
+- **Workspace members without admin rights.** Setup's **Add it in ChatGPT** step explains what to ask your admin for in a ChatGPT Business, Enterprise or Edu workspace.
+- **The built-in browser minimizes where you want:** taskbar or tray (Dock or menu bar on macOS).
+- **Two browsers connected:** Setup shows which kind each one is.
+- **Local control API:** it can stop the answer a chat is writing, and run workers.
+- **Updates you can follow.** The question before restarting is now the app's own dialog, with **Keep working** first. While an update installs, a Chat On Steroids window shows each step, and on Windows the installer's progress follows. From this version on, the app opens again by itself without a click.
+- **Codex limits explained.** When Codex stops at a limit, Usage says why in your language, for example when the workspace's Codex credits are used up.
+- **The automatic Continue** no longer ends with a random fun fact. Switch it back on under **Settings → General → Playful asides in automatic Continue**.
+
+## [2.1.37] — Find in chat, slash commands and Send now
+
+Everyday comforts for working in chats: find text in a chat with ⌘F, reach most actions with `/` commands, choose what Enter does and what a message during a running answer does, send a queued message right away, and get a notification when a chat finishes. Long runs keep your computer awake, the final answer of a long turn shows where it belongs, and worker chats can leave your ChatGPT chat list once they're done.
+
+### 👉 After updating
+
+- Nothing to do. The browser extension updates itself once no chat is busy.
+
+### ✨ Highlights
+
+- **Find in chat.** Press **⌘F** (**Ctrl+F** on Windows and Linux) in an open chat to search the whole chat, including older messages that aren't loaded yet. Enter or ↓ goes to the next match, Shift+Enter or ↑ to the previous one, and matches are highlighted in the messages.
+- **Slash commands.** Type `/` in the message box for `/model`, `/reasoning`, `/new`, `/rename`, `/pin`, `/status`, `/review`, `/init`, `/usage`, `/plugins`, `/pet` and `/feedback`, next to `/plan`, `/goal`, `/loop` and `/compact`.
+- **Send a queued message now.** A message waiting for the running answer has a **Send now** button that puts it into that answer right away, like Codex's steer.
+- **Your choice for messages during a running answer.** **Settings → General → Messages during a running turn** sets whether a message joins the running answer or waits until it ends. **⌘⇧Enter** (**Ctrl+Shift+Enter**) sends it the other way.
+- **Choose what Enter does.** **Settings → General → Send messages with**: Enter, or ⌘Enter / Ctrl+Enter, so Enter starts a new line.
+- **A notification when a chat finishes** while the app is in the background, with the start of the answer. Workers and chats with Goal or Loop on stay quiet. **Settings → General → Notify when a chat finishes**.
+- **The computer stays awake while a chat works**, so long runs keep going. **Settings → General → Keep awake while a chat works**: the computer (default), the computer and screen for Windows laptops that sleep as soon as the screen turns off, or off.
+- **Archive worker chats.** With **Settings → Agents & automation → Archive worker chats in ChatGPT when they are retired** on, each worker's chat is archived in ChatGPT once the app can no longer use that worker (you cleared the workers, the main chat closed, or its finished task sat for a week). Nothing is deleted: you can restore them from ChatGPT's settings, and the app keeps its transcript. Off by default.
+- **More room for recordings.** **Settings → Agents & automation → Browser & history → Storage size** goes up to 50 GB, and **Free storage** removes the images and long texts of chats you haven't used for a week, oldest first.
+
+### 🛠 Fixed
+
+- **Compact & Resume after a broken answer.** When ChatGPT's answer stream broke in a long thinking turn ("Connection interrupted"), the handoff could wait up to 20 minutes at Preparing. It now continues right away.
+- **A message you send while ChatGPT's answer is broken** is now kept and sent after that answer. Before, it was dropped after a minute when the page couldn't take it into the broken answer.
+- **Goal after a reloaded long answer.** When a long answer was reloaded and ChatGPT's final answer arrived afterwards, Goal could stay at "Checking the answer is finished" for good. It now continues.
+- **Goal in long chats on the ChatGPT Free plan.** When ChatGPT refuses Goal's helper message as too long, the next one is shorter. Before, Goal waited 3 minutes and failed the same way every round.
+- **Minimizing the built-in browser** now keeps it in the taskbar or Dock, where you can restore it. Before, it disappeared into the tray.
+- **The final answer of a long turn** now shows at the end of the chat. It was filed where it started, sometimes far up among the tool calls, and in long chats it didn't show at all. This also fixes chats recorded before the update.
+- **Links in ChatGPT's answers** now come out as proper links when you copy or export an answer, in search results and in notifications, instead of their label and address run together.
+- **Opening a chat from History** now uses the built-in browser when you chose it, also while the browser extension is connected in Chrome or Edge.
+- **The app's own requests** (update check, Skills from GitHub, Goal providers, remote plugins) now go through your system's proxy, like the tunnel since 2.1.36.
+
+### ✨ Improved
+
+- **Goal pauses instead of going in circles.** When ChatGPT gives the same answer three times in a row, Goal stops asking, tells you why and switches itself off for that chat.
+- **Automatic plugin refresh** is offered once in the app, so you don't have to find the setting.
+- **Setup:** using your own HTTPS tunnel now explains that its secret path changes every time the app starts.
+
+### 💛 Thank you
+
+To **@mch1902879100-cmyk** for fixing the History browser choice, **@atsu6** for the groundwork of the coming update workflow, and **@abdulsalamgs** for tidying up how workers are admitted.
+
+And to everyone whose reports led to changes in this release: **@lambert-lincoln** (worker chats in the chat list), **@lic-twrightjay** (minimizing the built-in browser, Goal on the Free plan) and **@thecravenfoodie-rgb** (own tunnels).
+
+## [2.1.36] — Steadier long runs, proxy support and ChatGPT's own words
+
+Long runs recover more reliably: a chat that stops on "Message delivery timed out" now continues by itself, and the app keeps its footing after your computer sleeps. The tunnel to ChatGPT works behind a proxy, Windows dictation is much more accurate, and the app now uses ChatGPT's own words and screens, in your language. Developers can start chats through the Local control API and follow them live.
+
+### 👉 After updating
+
+- **Refresh the Core plugin in ChatGPT once.** One of Core's tool descriptions changed, so ChatGPT needs to load the new version. With **Automatic plugin refresh** on (**Settings → Agents & automation → Browser & history**), the app does this by itself about two and a half minutes after it starts. Otherwise the app shows a reminder: in ChatGPT, open **Plugins**, choose your **Chat On Steroids Core** plugin and click **Refresh tools**.
+- The browser extension updates itself once no chat is busy; there is nothing to do.
+
+### ✨ Highlights
+
+- **Chats continue after a delivery timeout.** When ChatGPT's answer stops on "Message delivery timed out" or "Connection interrupted", the app now presses Stop and sends Continue on the page as it is, which is what got these chats going again by hand. Before, it reloaded the page into the same error or into "Could not load this ChatGPT conversation". Needs **Automatically recover unfinished answers** on (**Settings → Agents & automation → Continuation sources**).
+- **Steadier long runs.** After your computer wakes from sleep, working chats get 90 seconds to reconnect before the app tries to recover them. Compact & Resume no longer gets stuck when the old chat's answer goes quiet, and still picks up the handoff when the old chat's turn only ends after the request. While an automatic Compact & Resume waits for the turn to end, the dock above the message box says so. The timeline keeps a long turn's "Working…" line, its worker reports and its recovered notices where they belong.
+- **Works behind a proxy.** The Secure Tunnel now uses your system's proxy by itself (HTTP, HTTPS or SOCKS5), and `ALL_PROXY` if you set it. Before, you had to set `HTTPS_PROXY` before starting the app. `HTTPS_PROXY` still wins, and is the way to use a proxy that needs a login.
+- **Better dictation on Windows.** Dictation now uses Windows' own speech recognition, with punctuation and much better accuracy, and keeps your last words when you stop.
+- **Plugins, as ChatGPT calls them.** ChatGPT no longer says "connector" anywhere, so the app doesn't either: Core, Desktop and Plugins are plugins in ChatGPT. Plugins with many tools (over 256, or over 1 MB) can now be installed too; ChatGPT gets what fits, and switching tools off makes room for others.
+- **Start chats from your own tools.** With **Local control API** and **Allow actions** on (**Settings → General → For developers**), `POST /v1/inputs` without a `sessionId` starts a new chat, and `GET /v1/sessions/{id}/events/stream` sends that chat's events as they happen.
+
+### 🛠 Fixed
+
+- **Plans in an existing chat.** When nothing is running in the chat, a written plan now waits for you and starts when you press Enter or Send. Before, it waited for another message.
+- **Project folders that looked empty.** A project whose chats are all older now loads them when you expand it, instead of showing nothing.
+- **Saved keys that can no longer be read** (for example after moving to another computer or resetting the keychain): the app now says so and offers to start fresh, keeping the old file as a backup. Before, every new key was silently refused.
+- **Recording storage full.** When the 2 GiB of stored images and long texts is full, the app now shows a notice with the clean-up, instead of silently no longer saving them. **Settings → Agents & automation → Browser & history → Recording storage** shows the space used and offers the same clean-up at any time.
+- **Long unattended runs on Windows** could stop at a ChatGPT approval prompt that flagged a tool description as "suspicious". The description is reworded (this is the Core refresh above).
+- **Automatic plugin refresh after an update** now reaches ChatGPT: it waits until the restarted tunnel has taken over, where it used to click too early and leave ChatGPT with the old tools. A refresh that worked is now confirmed as soon as ChatGPT has the new tools, instead of sometimes being reported as failed with the reminder staying up.
+- **Updates** recover by themselves after a failed check, and now download on slow connections too.
+- **Saving a ChatGPT image** now works in folders on exFAT drives, network shares and WSL.
+- **Editing a file with `apply_patch`** no longer removes its byte-order mark, which broke PowerShell scripts with non-English text.
+- **Formulas in GPT-6 answers** now draw; before, many showed as LaTeX source with broken brackets.
+- **The "ChatGPT temporarily limited access" notice** says until when ChatGPT asked to wait, appears once, and the app continues by itself afterwards. A chat that is continuing stays under watch through that limit.
+- **Automatic recovery** is kept for a new turn that starts while the app is still finishing a check on the previous one.
+- **Portuguese ChatGPT accounts:** a message that ChatGPT failed to deliver ("A entrega da mensagem atingiu o tempo limite") is now recognized and recovered.
+- **The built-in browser** no longer goes quiet in long runs while still looking connected.
+- **Code mode** no longer stops a short script with a CPU-limit error when the computer is busy.
+- **Tunnel errors** that arrive as structured data now show their text instead of "[object Object]".
+- **A copy that fails** is now reported instead of being shown as done.
+- **Switching the language** now also updates two labels that stayed in the previous language.
+
+### ✨ Improved
+
+- **Setup in your language.** Setup shows ChatGPT's and OpenAI's screens as they look today, in your language, names ChatGPT's buttons the way ChatGPT shows them, and its first step opens your browser's own extensions page with the address copied for you.
+- **Two plugins on one tunnel ID** (which makes about every second call fail with UNKNOWN_TOOL) is now flagged in Setup, in the Plugins dialog and by the connection self-test.
+- **Automatic plugin refresh** is safer when tunnels or setup profiles change, and recovers by itself from a saved state that could not be read for a moment.
+- **Translations:** each feature has one name throughout each language, German says "du" everywhere, the browser extension is called that everywhere, and the bundled pets describe themselves in your language.
+- **The diagnostics report** shows how much memory the app's parts use, including each ChatGPT page of the built-in browser.
+- **Worker checkouts** are listed under the worker's job, not under the last message it received.
+
+### 💛 Thank you
+
+To **@Haz4rdovisk** for the delivery-timeout recovery, the Compact & Resume and timeline fixes and the measurements from their long runs, **@atsu6** for making automatic plugin refresh safer and preparing the update texts, and **@mch1902879100-cmyk** for finding and first fixing the empty project folders.
+
+And to everyone whose reports led to fixes in this release: **@danangplace-cpu** (delivery timeouts), **@lic-twrightjay** (proxy), **@lambert-lincoln** (plans in an existing chat) and **@j5bak928-a11y** (two plugins on one tunnel).
+
+## [2.1.35] — ChatGPT Projects, worker worktrees and steadier long runs
+
+New Chat On Steroids projects get their own ChatGPT Project, background chats can live in a tab group, and workers can each get their own Git copy of the project. On Windows you can dictate a message. Long runs are steadier: messages sent while ChatGPT is working reach it, and the app raises fewer false alarms. Renamed connectors keep working, and two computers on one ChatGPT account no longer mix up their tools.
+
+### ✨ Highlights
+
+- **New projects get a ChatGPT Project.** When you add a project folder, the app also creates a ChatGPT Project with the same name, and every new chat of that project opens inside it. A ChatGPT tab opens for a few seconds to create it. Existing projects and chats are not changed. If the Project can't be created, the project's menu offers **Retry ChatGPT Project**.
+- **Background chats in a tab group.** In **Settings → Agents & automation → Browser & history**, **Background tabs open in** can now be **A tab group in your browser window**: one collapsed "Chat On Steroids" group instead of a separate minimized window. The window stays the default.
+- **Workers in their own Git copy.** With **Isolate new workers in Git worktrees** on (off by default), each new worker gets its own Git worktree and branch, so workers don't edit your checkout or each other's files. A new **Worker checkouts** section lists the copies of finished workers. Removing one asks first and keeps its branch and commits. It needs an approved folder that contains the project, not the project folder itself.
+- **Dictation on Windows.** A microphone button in the message box turns speech into text with Windows' own speech recognition. The text goes into your draft and is never sent on its own.
+- **Renamed connectors keep working.** You can rename the Chat On Steroids apps in ChatGPT: after their first use, the app recognizes them by ChatGPT's app ID.
+
+### 🛠 Fixed
+
+- **Messages sent while ChatGPT is working reach it.** On models other than Pro, a message sent during a long running answer could be folded into a tool result, where ChatGPT never treats it as your words. It now goes through ChatGPT's message box. A message sent into a running answer also stays in its place in the timeline.
+- **Fewer false alarms in long runs.** A turn that a new message continued was sometimes reported as "No visible progress for ten minutes", followed by a reload and "This chat stopped". Automatic Compact & Resume no longer uses up its retries reloading a chat that is still working and then gives up.
+- **Two computers on one ChatGPT account.** A chat continued with Compact & Resume, or a new worker, could use the other computer's tools. Each computer now uses its own.
+- **Interim messages in long GPT-6 turns** now appear while the turn runs. Before, they could show up 15 to 20 minutes late, or only after a reload.
+- **With unattributed calls turned off,** a chat's first command could be refused with `EXEC_SESSION_ANONYMOUS` when the chat came back to check on it. It now stays reachable from that chat.
+- **Windows reserved ports.** When Windows reserves ports 8765–8769 (Hyper-V, WSL or Docker can do this), the browser extension could not connect. The app now also tries 18765–18769 and 38765–38769.
+- **A chat deleted in ChatGPT** now says so and ends, instead of staying on "Working…" or failing with an unrelated error. Messages still waiting for it end too.
+- **When ChatGPT limits how fast history loads,** the app retries less and less often instead of every minute, which kept the limit going, and shows the notice once instead of every time.
+- **Timeline:** the "Working…" line stays under your question and no longer blinks or appears on older pages of history. A paragraph ChatGPT reported late now appears in the turn it belongs to.
+- **Formulas** that ChatGPT writes right after a line of text now draw, instead of showing as a large heading with the formula's source.
+- **Workers without their own Git copy:** when the approved folder is the repository itself, ChatGPT now explains that you need to approve the folder above it, instead of only reporting that the worker could not be created.
+- **Files in a path under the wrong approved folder:** a failed read now suggests the right path, instead of listing that folder's contents.
+- **Project Files** refresh again after the operating system stops reporting changes in a folder.
+- **macOS:** the app now declares why it uses the local network, so macOS can ask before blocking commands that reach devices on your network.
+- **Setup** shows ChatGPT's current steps: **Plugins → Add → Add custom MCP server**, then **Create as a plugin**.
+
+### 💛 Thank you
+
+To **@Haz4rdovisk** for native ChatGPT Projects and the many long-run fixes from their test runs, **@kodji7202-code** for worker worktrees, **@Gokuencinar** for Windows dictation and the Project Files fix, and **@hezhiming2026** for the macOS local network fix. And to **@ELSAPHABA** for the Windows port report, **@Neinndall** for the report on queued message placement, **@lambert-lincoln** for the formula report, and **@xuan2261** for asking for ChatGPT Projects.
+
+## [2.1.34] — Goal on every plan, and a background window that stays
+
+Goal and Loop now work on ChatGPT plans that don't show a model picker, such as the Free plan, and Compact & Resume works reliably inside ChatGPT Projects. The Background chats window survives extension updates, and ChatGPT gets clearer hints when it calls a tool on the wrong connector or starts a command that is already running.
+
+### ✨ Highlights
+
+- **Goal on every plan.** On plans without a model picker (for example the Free plan), every Goal or Loop follow-up used to fail with "Requested model or reasoning could not be confirmed". Follow-ups now use the model the chat already has.
+- **A background window that stays.** With **Background chats** on, the extension kept forgetting its background window whenever it updated or reloaded. New background chats then opened another window, and selecting a chat in the app no longer showed its tab there. The same window is now used again.
+- **Clearer when a tool is on another connector.** When ChatGPT runs a script that calls a Chat On Steroids tool its connector doesn't have, the result now names the connector that has it, instead of only "not a function". If your connectors share one Secure Tunnel ID, it also says that this sends calls to the wrong connector.
+- **Fewer repeated commands.** When ChatGPT starts a command that is still running in the same chat and folder, for example after a lost answer, the result now says so and how to read the running one, so copies don't pile up. The new command still runs.
+
+### 🛠 Fixed
+
+- **Compact & Resume in a ChatGPT Project** often stopped before the new chat opened (8 of 14 times in testing), because ChatGPT changes a Project chat's address while it loads. It now completes, and the new chat stays in the same Project. A handoff request ChatGPT never received is sent once more instead of waiting forever, an earlier attempt's request left in the message box no longer blocks the next try, and a tab opened for a failed attempt is closed again.
+- **ChatGPT now sees the notes on command results.** The hints that come with a command's result, such as which command in a batch failed, that a non-zero exit is an expected answer (for example a search with no matches), or how to recover from a common mistake, were only in a part of the result ChatGPT doesn't show the model. They now reach it.
+
+### 💛 Thank you
+
+To **@Haz4rdovisk** for the native-Project test run and the Compact & Resume fixes it led to, and to **@rishabhpunnackadan-ux** for the detailed reports behind the clearer connector hint and the repeated-command note.
+
+**Updating?** The extension updates itself once no chat is busy. If it stays on the old version, reload it once in `chrome://extensions`. On macOS, the app asks once for your login password so the new version can open its saved keys: choose **Always Allow**.
+
+## [2.1.33] — Reuse a saved summary, and see why a message waits
+
+When Compact & Resume stops after ChatGPT already wrote its summary, you can now open the new chat with that summary instead of starting over. A message that waits to be sent now says why, and with Background chats on, the background window shows the chat you selected in the app. Open ChatGPT chats use much less CPU while idle, and several long-run and Windows problems are fixed.
+
+### ✨ Highlights
+
+- **Reuse a saved summary.** If Compact & Resume stops after ChatGPT wrote its summary (you cancelled it, or the new chat couldn't open), its row in the timeline offers **Open a new chat with this summary**. The new chat gets the same summary; ChatGPT doesn't have to write it again.
+- **See why a message waits.** A queued message now says when it is waiting for the browser extension to connect, or for a tool call in that chat to finish, instead of showing only a clock.
+- **The background window follows you.** With **Background chats** on, selecting a chat in the app makes its tab the one shown in the background window. Chrome doesn't come to the front.
+- **Calmer when ChatGPT is busy.** When ChatGPT limits how fast chat history can be loaded, automatic recovery waits as long as ChatGPT asks instead of reloading again and again.
+- **Lighter on your computer.** Open ChatGPT chats use much less CPU while they wait.
+
+### 🛠 Fixed
+
+- **A message ChatGPT didn't take** when you sent it just as an answer was ending is now sent once more, instead of being left in ChatGPT's message box.
+- **Windows: quitting the app** with a terminal panel open, or right after closing one, could crash it. The app now waits for the terminal to close first.
+- **Windows: the installer** now says when it can't update an existing installation because of folder permissions, and what to do, instead of closing without a word.
+- **macOS: quitting** now works while the login-password prompt for the app's saved keys is still open.
+- **Local plugins** get more time for their first start, so a slow first start on Windows no longer leaves them in an error state.
+- **The update check** also works on networks where GitHub's API refuses it.
+- **"Skipped 1 unreadable recent event line(s)"** is reported once instead of several times a second. It means one line of a chat's history was cut off (for example when the app was stopped while writing); only that line is skipped.
+- **A Core tool called through the Plugins connector** now gets a refusal that names your Core connector, so ChatGPT can pick the right one.
+- **Saving a chat as Markdown** no longer cuts an emoji in half in the file name.
+- **Delivery errors** under a message are shown in the language of the app.
+
+### 💛 Thank you
+
+To **@lavalava45** for honoring ChatGPT's rate limits during recovery, to **@Inmerson** for the quieter unreadable-line warning, the emoji-safe file names and tighter Windows connector instructions, and to **@mvanhorn** for naming the right connector in Plugins refusals.
+
+**Updating?** The extension updates itself once no chat is busy. If it stays on the old version, reload it once in `chrome://extensions`. On macOS, the app asks once for your login password so the new version can open its saved keys: choose **Always Allow**.
+
+## [2.1.32] — Messages that reach the running answer, and a Stop that sticks
+
+A message you send while ChatGPT is working now reaches the model: it goes into the running answer as a real ChatGPT message, even while a command runs. When ChatGPT asks you to pick an option, the timeline shows the question and its choices. Stop ends a turn for good, and a few long-run problems from 2.1.31 are fixed.
+
+### ✨ Highlights
+
+- **Messages reach the running answer.** While ChatGPT works, **Send directly** puts your message into the running answer as a real ChatGPT message, where it shows on the website too. It works even while a command is running, and the command keeps its result. Before, "Inject now" tucked the message into the next tool result, and on GPT-5.6 and GPT-6 the model ignored it there. **Inject now** stays for Pro answers and for images.
+- **ChatGPT's choices in the timeline.** When ChatGPT asks you to pick an option on its page, the timeline shows the question and the choices as a read-only card. You answer in ChatGPT.
+- **A Stop that sticks.** Stop ends the turn even when a tool result arriving after it reopens the turn. A second Stop is answered, and the timeline says when the turn stopped.
+- **A clearer Usage page.** Token counts are whole numbers, a cost that is partly without a price shows as a lower bound ("≥ $4.10"), and the activity chart opens on the newest weeks.
+- **Skills in your language.** The recommended skills describe themselves in the language of the app, and search finds them by those words.
+
+### 🛠 Fixed
+
+- **Right after an update or restart,** a message for a chat that was already open waits a few seconds and says "Sending in a moment…", so its tool calls no longer sit for two minutes. ChatGPT routes an existing chat's calls to the restarted connection only after a few seconds; sent earlier, a call used to wait about 128 seconds.
+- **"Thinking" that never ended:** a turn now ends on ChatGPT's final answer even when that answer was already on the page before the app saw the turn begin.
+- **Old chats stay quiet:** opening an old chat for a moment no longer reopens its tab later or starts an automatic Compact & Resume for it. Both could happen to a chat whose turn had been left open days earlier.
+- **Messages sent during a turn** stay where you sent them in the timeline.
+- **Plugins keep working** after one of their tools reports an error.
+- **The "connector tools changed" banner** goes away once the automatic plugin refresh has updated ChatGPT, instead of asking for a refresh that already happened.
+
+### ⚠️ Known issue
+
+- **Right after an update or restart,** a tool call from a chat that was already open can still, now and then, take up to two minutes to arrive while ChatGPT shows "Still waiting for the current operation to complete". It goes through by itself. The app now avoids this in most cases (see Fixed), but the routing is on OpenAI's side ([#1220](https://github.com/totec448-spec/chat-on-steroids/issues/1220)).
+
+### 💛 Thank you
+
+To **@Haz4rdovisk** for the Stop and turn-ending fixes, and for measuring the restart delay down to its cause and holding messages until the route is ready, to **@m1d0e1** for showing ChatGPT's choice prompts in the timeline, and to **@Akilaydin** for keeping plugins alive after tool errors.
+
+## [2.1.31] — Ready for GPT-6, with a timeline that reads like ChatGPT
+
+ChatGPT's GPT-6 rollout changed how its page works, and this release catches up. You can pick GPT-6 in the app, and Goal, Loop and Compact & Resume work on it again. The timeline now shows a turn in rounds the way ChatGPT does, the Sub-agents list says what each worker is doing, and Setup asks up front what ChatGPT may do on your computer.
+
+### ✨ Highlights
+
+- **Ready for GPT-6.** The model picker shows GPT-6, GPT-5.6 and GPT-5.5 with Instant, Medium and High, and Goal and Loop use GPT-6 by default. The two known issues from 2.1.30 are fixed: Compact & Resume carries the whole summary over to the new chat again, and the model menu lists ChatGPT's models correctly.
+- **A timeline in rounds.** Each turn reads in rounds like ChatGPT's own. The model's sentences between steps are kept, each round is titled with ChatGPT's own summary, the live line says what ChatGPT is doing right now, and formulas render.
+- **A clearer Sub-agents list.** Each worker is named for its job and shows its own task, its state and its model at a glance.
+- **Setup asks what ChatGPT may do.** A new Access step offers the same permission switches as Workspace, and the last step tells you plainly when access is limited.
+- **Panels in the title bar.** The panel buttons moved into the title bar, and the right panel now runs the full height of the window. A project's new chat is one click again: the pencil beside its menu.
+
+### 🛠 Fixed
+
+- **Goal and Loop on GPT-6:**
+  - Goal recognizes a finished task again.
+  - Loop no longer stops with "the structured decision was not JSON".
+  - The helper chats Goal and Loop use for their decisions close again instead of piling up in Chrome.
+- **Compact & Resume** no longer reloads the chat it starts from, which could make the first attempt fail with "the Send button or message box was not ready".
+- **Very long Compact & Resume summaries** keep their end when ChatGPT's page draws more than 120 KB for them.
+- **Model list:** refreshing it no longer fails when an open chat still uses a model ChatGPT has retired. On a translated ChatGPT page, Extra High is listed the same way as on an English one.
+- **Several computers on one account:** a new worker tab now calls this computer's Chat On Steroids, even before its page has listed its apps.
+- **Recovery:** a chat that leaves ChatGPT's "could not be loaded" page keeps its automatic recovery.
+- **Attachments:** a file shown as one of ChatGPT's newer file tiles is recognized, so a message with it is no longer held back in the draft.
+- **Search** lists chats whose title matches first, before matches in the chat's text.
+- **Goal and Loop keep going** when you send your own message while their helper is still working. Before, the Loop stopped with "Helper delivery was not confirmed" until you pressed **Start a new helper**.
+- **Your saved models are used again.** A model you picked in Settings before this version (for Goal and Loop, sub-agents or new chats) was saved under its old short name, such as "6" or "5.6". It no longer matched ChatGPT's new full names, so ChatGPT's current model was used instead.
+- **Formulas** use all of their own fonts again.
+- **Settings** lists GPT-6 once as the Goal, Loop and Plan model, instead of a second entry showing its internal name.
+
+### ⚠️ Known issue
+
+- **Right after an update or restart,** the next tool call from a chat that was already open can take about two minutes to arrive, while ChatGPT shows "Still waiting for the current operation to complete". It then goes through by itself. New chats aren't affected. The delay is in how ChatGPT routes calls to the restarted connection ([#1220](https://github.com/totec448-spec/chat-on-steroids/issues/1220)).
+
+### 💛 Thank you
+
+To **@Haz4rdovisk** for the GPT-6 model picker, the timeline in rounds, the Sub-agents list, the new Setup step and the title bar layout. To **@Gokuencinar** for the attachment, search, timeline and journal fixes, and to **@m1d0e1** for the formula rendering idea that the timeline builds on and for keeping very long summaries intact. And to **@tude91979059-byte**, whose long runs on GPT-6 showed where the app no longer understood ChatGPT's page.
+
+## [2.1.30] — See what's new, and long runs that stop and recover more calmly
+
+After an update, the app now shows a short summary of what changed. A message ChatGPT never picks up no longer causes endless reloads: the app tries three times, then says so. Sub-agents on slow connections get more time, your settings survive a file the app can't read, and the View menu in the title bar matches the rest of the app.
+
+### ✨ Highlights
+
+- **What's new, after every update.** The first time the app opens on a new version, a short summary like this one appears once, with a link to the full release notes. A fresh install shows nothing.
+- **Clear stops for stuck messages.** If ChatGPT never picks up a message waiting in the queue, the app reloads the chat at most three times (after 2, 5 and 10 minutes). Then it stops, says "Stopped after 3 attempts" above the message box, and keeps the message queued. It is sent as soon as the page takes it, or you can edit or remove it. Before, the app kept reloading the chat every 15 minutes indefinitely.
+- **A new View menu.** The "View" text in the title bar is now an icon button next to the sidebar toggle. Its menu looks and works like the menus in the sidebar, with icons and keyboard shortcuts, and offers **Show browser** when ChatGPT runs in the built-in browser.
+
+### 🛠 Fixed
+
+- **Your settings stay put.** A settings file saved with a byte-order mark (by some Windows editors or PowerShell) made the app start with default settings. It now reads such a file, and a file it really can't use is kept as a copy next to the settings instead of being lost.
+- **Sub-agents:**
+  - **Slow connections:** a new worker tab now gets 45 seconds instead of 20 to pick up its task, so workers no longer fail just because ChatGPT loaded slowly.
+  - **Several computers on one account:** a worker no longer gets stuck behind its own unsent wake message when the Core connector's name carries a suffix.
+- **Recovery stays on when the app reuses a tab.** When the app reused a quiet chat's tab for a new chat, that chat counted as closed by you and lost its automatic recovery. It now keeps it.
+- **Clearer logs:**
+  - **Failed sends:** when the Core mention right before Send fails, the log now says so, instead of reporting a changed draft.
+  - **Projects:** when opening a chat inside a ChatGPT Project fails, the log says at which step.
+
+### ⚠️ Known issues
+
+- **Compact & Resume may not start on ChatGPT's newest page layout.** ChatGPT is rolling out a new page layout. On it, the app reads the handoff before ChatGPT has finished writing it, sees that it's far too short, and safely stops instead of moving your work: you stay in your chat and nothing is lost. Version 2.1.29 is affected the same way. A fix follows in the next version.
+- **ChatGPT's GPT-6 rollout changed its model menu.** Until the next version, the app's model menu can list models oddly (GPT-6 split into separate "Instant" and "Reasoning" rows), the Goal and Loop helper falls back to ChatGPT's current model because its default is no longer offered, and waking a sub-agent can fail when its model is selected first ("ChatGPT did not show a usable message box after the model was chosen"). A fix follows in the next version.
+
+### 💛 Thank you
+
+To **@Haz4rdovisk** for the idea of the What's New screen and for the new View menu, to **@mch1902879100-cmyk** for the bounded pickup recovery, and to **@xuan2261** for the Project entry diagnostics. And to **@tude91979059-byte**, whose long-run reports and logs found the reused-tab and wake-message problems fixed here.
+
+**Updating?** The extension updates itself once no chat is busy. If it stays on the old version, reload it once in `chrome://extensions`. On macOS, the app asks once for your login password so the new version can open its saved keys: choose **Always Allow**.
+
+## [2.1.29] — Pin your chats, and know when ChatGPT is waiting for you
+
+Pin the chats you use most, open search from anywhere, and find any setting by typing. When ChatGPT asks you to approve a tool, the app now tells you instead of the chat quietly standing still. Long runs recover on their own in more situations, and Compact & Resume is more reliable.
+
+### ✨ Highlights
+
+- **Pin chats.** Pin a chat to keep it at the top of its list in the sidebar.
+- **One menu for every chat and project.** Each chat in the sidebar has a single ⋯ menu with everything you can do with it: pin, rename, open in your browser, block or remove it, and now **Copy link** to copy the chat's ChatGPT address. Projects get the same menu, with a new chat and their color.
+- **Search from anywhere.** ⌘K (Ctrl+K on Windows and Linux) opens a search window. Picking a result opens the chat right at the message that matched.
+- **Search your settings.** A search field in Settings finds any setting on any page as you type, and takes you straight to it. In Settings, ⌘F (Ctrl+F on Windows and Linux) jumps into it.
+- **Know when ChatGPT is waiting for you.** Sometimes ChatGPT asks you to allow or deny a tool call before it continues. The chat now says so, with a button that opens it in your browser, and a desktop notice follows if nobody answers within half a minute. The app never answers for you.
+- **A clearer connection control.** The connection now lives in one small capsule at the bottom of the sidebar. If a working connection drops unexpectedly, you get a notice once instead of finding out later.
+
+### 🛠 Fixed
+
+- **Long runs recover more reliably.**
+  - **Busy chats:** a chat that stalled after a ChatGPT error used to wait forever while other chats kept running tools. It now continues on its own within a few minutes.
+  - **"Stream cache expired":** a chat that showed this error now recovers by itself.
+  - **The log says why it waits:** when the app holds back a recovery, it logs the reason.
+- **Compact & Resume:**
+  - **When ChatGPT rebuilds its message box:** the handoff no longer gets lost.
+  - **Slow new chat:** the new chat is no longer mistaken for a second, separate session.
+  - **Closed chat:** you can now start it for a chat whose tab was closed.
+- **Scrolling up one notch keeps your place.** A single scroll-wheel step up wasn't always noticed. Opening the terminal or a growing message box then pulled you back to the end.
+- **Agents & automation no longer moves your chat.** It used to open scrolled to the bottom with the chat's "jump to latest" button over it, and the chat could stop following new messages after a visit.
+- **Messages the app sends for you show as written,** without stray backslashes in front of formatting characters.
+- **Windows: the pet stays the size it should,** even while idle.
+- **Updates are found sooner.** Opening Settings checks again if the last check is more than 10 minutes old.
+
+### 💅 Polish
+
+- **Setup:** the check marks are centered in their circles again.
+- **Health:** the "verified link" and "last ChatGPT call" boxes have even spacing.
+- **Sub-agent and Goal helper models:** an unset sub-agent model now shows "Automatic". The "Unverified" badge explains that ChatGPT's current model is used instead.
+- **The Activity page has a title** like the other settings pages.
+- **Search closes an open ⋯ menu,** so it no longer stays open over the search window.
+- **Activity no longer reports a problem on every start** when your ChatGPT account doesn't offer the Goal helper's default model. The app already used ChatGPT's current model instead.
+
+### 💛 Thank you
+
+To **@Haz4rdovisk** for the row menu, the connection capsule and the search window. To **@Akilaydin** for the connection-lost notice, **@lavalava45** for the "Stream cache expired" recovery, **@m1d0e1** and **@mch1902879100-cmyk** for the Compact & Resume fixes, and **@xuan2261** for the Windows pet fix. And to **@tude91979059-byte**, whose long-run logs found why stalled chats didn't recover.
+
+**Updating?** The extension updates itself once no chat is busy. If it stays on the old version, reload it once in `chrome://extensions`. On macOS, the app asks once for your login password so the new version can open its saved keys: choose **Always Allow**.
+
+## [2.1.28] — Find any chat, and bring your Skills along
+
+Search all your chats by title or by what was said in them, and give chats your own names. Your Claude Code, Codex and personal Skills work without sharing the rest of those folders. ChatGPT can now create pictures in app chats, and save them into your folders. Setup is a guided step-by-step wizard, and ChatGPT can now also run in the app's own built-in browser. Goal no longer gets stuck on "Answer settling".
+
+### ✨ Highlights
+
+- **Search your chats.** A search field above your chats finds any chat by its title or by what was said in it, including chats older than the list shows. Type a few words in any order; accents don't matter ("cafe" finds "café"). The words are marked in the title and in a short excerpt. Press ⌘K (Ctrl+K on Windows and Linux) to jump to it.
+- **Rename a chat.** Use the pencil on a chat, or double-click its title, to give it your own name in the app. ChatGPT's title stays as it is, and clearing the name brings it back.
+- **Your Skills from Claude Code, Codex and ~/.agents just work.** Skills from your enabled Claude Code plugins, `~/.claude/skills`, Codex and `~/.agents/skills` are available to ChatGPT, read-only, without sharing the rest of those folders (no settings, history or keys). Pick any of them with `/` in the message box. ChatGPT also gets a short list that takes turns across all your Skill sources, so one big folder no longer hides the others.
+- **A guided Setup.** Setup walks you through six steps, one at a time, with a picture for each. Every step checks what's really done and remembers it across restarts, so a finished step no longer drops back to pending after a restart.
+- **An optional built-in browser.** In Settings › ChatGPT browser you can choose "Chat On Steroids browser" to run ChatGPT in the app's own window, kept in the tray, instead of a tab in Chrome. Google doesn't allow signing in inside an embedded browser, so for Google sign-in the app offers your installed Chrome, Edge or Brave to finish signing in. Chrome with the extension stays the default.
+- **Ask for a picture, get a picture.** ChatGPT turns its image tool off for any message that mentions an app, and the app mentions Chat On Steroids in your messages so ChatGPT can use it. So "Create an image of …" used to end with "no image tool available". Now the app notices when your message asks for a picture, in any of its languages, and sends just that message without the mention. Follow-ups like "make it brighter" right after a picture, and edits of a picture you attached, count too. Everything else keeps the mention, including requests that only talk about images, like "compress the images in this folder".
+- **Save images ChatGPT generates.** Ask ChatGPT to save an image it generated in your chat, and it saves the original file, not a screenshot, into a folder you shared. Existing files are never replaced. This is a new tool, so refresh Chat On Steroids Core in ChatGPT once after updating; the app reminds you.
+
+### 🛠 Fixed
+
+- **Goal no longer hangs on "Answer settling".**
+  - **Closed chat:** if you close a chat's tab before Goal decides, the row now says "Paused until this chat is open in the browser", with a button to open it, and Goal continues when you do.
+  - **Goal met while closing:** a Goal that decided "goal reached" while its tab was closing no longer keeps spinning.
+  - **Reopened chat:** a reopened chat whose first message ChatGPT showed late now gets its Goal decision.
+  - **After a stall:** Goal decides after a turn the page had to give up on, when ChatGPT had already delivered the answer.
+  - **After its own message:** Goal no longer stops after sending a follow-up that contains `code` or other formatting. ChatGPT answered, but the app didn't notice the answer, so Goal waited forever.
+- **Goal no longer reloads a chat again and again** after a page reload. Tool calls already on the reloaded page were taken for new work, so every Goal pickup was refused and the chat reloaded.
+- **macOS 27: choosing "Continue with Google" in the built-in browser no longer closes the app.**
+- **Setup's ChatGPT step speaks your language** when it names the plugins ChatGPT hasn't called yet, with the right singular or plural, and it says to pick "Tunnel, then your tunnel ID".
+- **The Plugins plugin's Setup check stays correct** when Plugins uses its own tunnel.
+- **A new chat no longer shows "moved from ChatGPT conversation null"** in Activity.
+- **When ChatGPT sends an image save to another computer's plugin,** the message now says which computer answered, instead of blaming the request.
+
+### 💅 Polish
+
+- **Shortcut labels match your keyboard:** ⌘ on macOS, and "Strg" in German, in the View menu and tooltips.
+- **Search says when there are more results** than it shows, and suggests adding a word.
+
+### 💛 Thank you
+
+To **@Haz4rdovisk** for the guided Setup and the built-in browser. To **@xuan2261** for keeping the canary builds and the welcome workflow running. To **@danangplace-cpu** for asking for chat search and renaming, and **@TimBriseby** for asking to save generated images. And to **@tude91979059-byte** for the detailed logs behind the Goal reload fix.
+
+**Updating?** The extension updates itself once no chat is busy. If it stays on the old version, reload it once in `chrome://extensions`. Chat On Steroids Core has a new tool, so refresh it once in ChatGPT's plugin settings when the app says "connector tools changed", or turn on Settings › Browser & history › Automatic plugin refresh. On macOS, the app asks once for your login password so the new version can open its saved keys: choose **Always Allow**.
+
+## [2.1.27] — Workers stay on track, and you stay in control
+
+Workers that think for a long time keep working instead of being put to sleep, and waking several workers at once works reliably. You can now see and stop the commands the app runs for ChatGPT, and cancel a reload you don't want. Settings get a General page, and on macOS the app explains its Keychain prompt before it appears.
+
+### ✨ Highlights
+
+- **Long-thinking workers stay awake.** A worker that thought for half an hour between steps used to show as "sleeping" again and again while it worked. The app now checks whether the worker's chat is still answering before it puts it to sleep.
+- **Waking workers works reliably.** Several waiting workers now wake at once instead of one after another, a woken worker's tab is no longer reloaded under it, and a new worker no longer gives up 12 seconds after its model is selected.
+- **See and stop background commands.** Commands ChatGPT started that are still running show above the composer, with how long they have run and a Stop button for each.
+- **Cancel an "Interrupted response" reload.** When ChatGPT's page loses an answer's live stream, the app counts down to a reload that reconnects it. If the answer is clearly still working, click × to skip the reload for that answer.
+- **One ChatGPT account on several computers.** Give each computer a name in Setup, for example "Windows", and its plugins get their own names in ChatGPT. Each computer then records its own chats and runs its own tools, instead of one computer picking up the other's work. Workers are also told exactly which computer's plugin to report through.
+- **No waiting for a model list on ChatGPT Go and Free.** These plans show no model picker, so the app used to wait up to two minutes before your first message could go out. Messages now go out right away with ChatGPT's own model, and "Automatic" is the first choice in the model menu. A model you pick or set as your default is still used exactly.
+
+### 🛠 Fixed
+
+- **Compact & resume finds your Project again** after ChatGPT moved the Project link on its page, instead of stopping with "could not open the source Project".
+- **Compact & resume recovers in minutes, not a quarter of an hour,** when its new chat gets stuck before typing, for example while choosing the model. Workers waiting for the handoff are back sooner too.
+- **Compact & resume no longer creates a second session** when the new chat takes longer than a minute to open, and a resumed chat keeps its tab.
+- **Recovery after a restart is safer.** A saved handoff brief can only resume the handoff it was written for.
+- **Goal waits as long as the provider asks** after a rate limit, instead of retrying every 15 seconds.
+- **Skills with multi-line descriptions** show the right description.
+- **Uninstalling a plugin** no longer fails when its folder is still in use.
+- **When a new worker's first message isn't accepted,** the error now says why.
+- **Window screenshots work on older Windows 10 versions,** which used to refuse them as out of date.
+- **A pet you're dragging stays in your hand** when the screen area changes.
+- **When a worker can't start or wake, the app says where it stopped,** for example while choosing the model, or because its chat was still answering or its message box wasn't empty, instead of only "did not report back in time".
+- **A message sent before Setup is finished** now stays queued and says Setup needs to be finished, instead of failing a minute later and blaming the browser connection.
+- **In developer mode, tool groups are named after what they did** again, not after the app's recovery note shown in front of them.
+- **The Read-only button stays readable while it's on.** Its label used to vanish into the button's own color.
+- **Open in ChatGPT opens the chat in the right browser.** With several Chrome windows or profiles open, it used to open in whichever one you used last, which could be signed in to another account.
+- **Scrolling up to read stays put** while new output arrives, also on slower machines where the scroll used to be missed and the chat jumped back to the end.
+- **Workers stay with the connection that started them.** After you switch to another Setup profile, a worker from the first one says so and waits, instead of running its tools through the wrong connection.
+- **When Goal decides your goal is met, the chat says "Goal reached"** instead of still showing "Pursuing goal".
+- **When ChatGPT reads the top folder "/", it gets the list of your shared folders** instead of an error, so it no longer has to guess their names.
+- **A quick first answer in a new chat no longer leaves its turn open for ten minutes.** When ChatGPT redrew a new chat and the answer had already finished, the app missed the end of the turn, and Goal kept saying "Pursuing goal" without deciding.
+
+### ✨ New
+
+- **See which rounds used sub-agents.** A round that worked with sub-agents shows an icon with their number. Click it to open the Sub-agents panel with those workers highlighted.
+- **See each edit's changes in place.** A recorded file edit shows its diff right in the step, loaded only when you open it, with Copy for the whole file.
+- **The app starts in your system's language** the first time you open it.
+- **Settings › General.** App-wide options (following new output, status words, the Core mention, screenshot privacy and developer options) have their own page instead of hiding under Setup › Advanced.
+- **Handoff length.** Choose how long Compact & resume briefs are: Thorough (the default, 10k–30k tokens), Standard or Short.
+- **Keychain notice on macOS.** Before macOS asks for your login password after an update, the app tells you why and what to choose.
+- **Only trusted chats can use your tools (optional).** When it's on, only chats you mark as trusted can use this computer's tools.
+- **Limit workers across all chats,** not only per chat.
+- **A clearer agent monitor:** failed workers in the History heading, and each worker's latest action and number of actions.
+- **Project colors.** Give a project one of six colors to tell your projects apart at a glance.
+- **The tray menu and desktop notices speak your language.**
+- **Clear workers asks first,** because it removes their saved histories for good.
+- **Main chats can message each other.** A main chat can send a message to another main chat it already knows, so two groups of workers can coordinate without you passing messages along.
+- **Diagnostics report.** Activity › Diagnostics report saves one file to attach to a bug report: versions, settings, the connection state and the log, with your user name, folder and file names, chat titles and tasks removed.
+- **A quicker model picker.** Thinking effort comes first, one button jumps between the current model's lowest and highest effort, and the full model list opens from the model name.
+- **Pick a Skill by naming it (optional).** Turn on Settings › Agents & automation › Auto-select Skills, and a message that names one of your imported Skills exactly, like "use systematic debugging", attaches it automatically.
+- **Skills from your Codex plugins.** If you use Codex, Skills from the Codex plugins you have installed and enabled now appear in your Skills library.
+
+### 💅 Polish
+
+- **The composer stays on one line** in narrow windows and with the side panel open.
+- **The extension popup says what to do** when it can't reach the app.
+- **Plainer words in more places:** removing a chat says it stays in ChatGPT, the Setup profile and the Read-only button explain themselves, and the extension says why it hasn't updated yet.
+- **The tool approval reminder appears only once Core is set up,** not on a fresh install where it can't apply yet.
+- **The Activity page shows each startup line once,** in the right order.
+- **Keyboard focus stays on a project's buttons** when the sidebar refreshes.
+- **Light theme:** small secondary text is easier to read, and 14 settings fields are now named for screen readers.
+- **Korean text wraps between words,** not inside them.
+- **Pets and Skills use one word in each language,** matching the sidebar, and a few Portuguese and Turkish texts now address you the same way as the rest of the app.
+
+### 💛 Thank you
+
+To **@xuan2261** for the trusted-chats option, the worker limit across chats, the agent monitor additions, project colors, the safer restart recovery, Goal's rate-limit wait, the Skill description fix, messages between main chats, Codex plugin Skills, picking Skills by name, the Project link fix for Compact & resume, window screenshots on older Windows 10, the steadier reading position and keeping workers with the connection that started them. To **@redzrush101** for inline edit diffs and the sub-agent count on rounds. To **@Haz4rdovisk** for the quicker model picker. To **@27mfp** for the one-line composer and the background command list. To **@m1d0e1** for finding and fixing the lost worker starts and the duplicate resume sessions. To **@Akilaydin** for fixing the bug report form. And to **@tude91979059-byte**, **@BroNils** and **@tngcphng** for the detailed reports and logs behind this release's worker and recovery fixes.
+
+**Updating?** The extension updates itself once no chat is busy. If it stays on the old version, reload it once in `chrome://extensions`. On macOS, the app asks once for your login password so the new version can open its saved keys: choose **Always Allow**.
+
+## [2.1.26] — New chats and long runs stay on track
+
+Your first message lands, your long runs keep going, and the app tells you what it's doing. This release fixes the lost first answers in new chats and the sends that failed in existing chats, and stops the false stalls and reload loops in long Goal, Loop and worker runs. You can now also watch a new chat's first answer take shape.
+
+### ✨ Highlights
+
+- **No more lost first answers.** When ChatGPT is slow, a new chat's first answer used to show up above your question, without Copy or Export, and the app reported "Stopped waiting for delivery confirmation". Your first message now always gets its turn.
+- **Sending into existing chats works again.** ChatGPT changed its page, and sends failed with "Requested model or reasoning could not be confirmed". Fixed.
+- **Watch the first answer take shape.** While ChatGPT works on a new chat's first answer, the app shows what the model writes between its steps, instead of nothing until the end.
+- **Long runs stay on track.** Messages you send while ChatGPT works no longer look like a stall, broken connections no longer block compaction forever, and Goal, workers and Continue recover on their own. One user ran 10+ hours without a single stop.
+
+### 🛠 Fixed
+
+- **No reloads in the middle of work.** A message you send while ChatGPT is answering joins that answer instead of making the app think the chat stalled.
+- **No more "Reload failed" while ChatGPT is answering.** When ChatGPT resumes an interrupted answer by itself, the app now says it's waiting for the answer to finish.
+- **Compaction no longer waits forever.** When ChatGPT shows "Connection interrupted" with its Stop button still visible, the app reloads the chat after a minute and compacts.
+- **Compact & resume continues after an answer that broke off.**
+- **No Continue loop on a finished answer.**
+- **Answers are kept when ChatGPT hides their question.**
+- **Goal's helper works reliably.** It answers without calling tools, and its answer is always picked up, also after a send that timed out.
+- **Workers start reliably,** even when several open at once, and a worker woken up again gets the messages meant for it.
+- **Commands keep running across turns.**
+- **The model you already picked is used directly,** without clicking through other model versions.
+- **Each round of work ends with its own summary** in the timeline, also after a reload.
+- **Documents ChatGPT is still writing** show properly instead of as raw `:::writing` text.
+- **Setup keeps the browser step done** while no ChatGPT tab is open.
+
+### ✨ New
+
+- **Default model for new chats.** Pick the model and reasoning that new chats start with. "Automatic" keeps today's behavior, and a chat you continue keeps its own model.
+- **Follow new output.** The app and the ChatGPT page stay at the end of the chat while answers grow. Scroll up to pause it. On by default.
+- **Choose whether your messages mention Chat On Steroids Core.** The mention makes sure ChatGPT can use the app in every chat. Turn it off if plain questions start with an unneeded tool call; workers, Goal, Loop and Continue always keep it.
+- **The window remembers its size and place,** and opens maximized if you left it that way.
+- **Search all OpenRouter models** in Goal's model list.
+- **Русский и Tiếng Việt.** The app now speaks Russian and Vietnamese.
+- **The extension speaks your language.** Its popup and its controls on ChatGPT follow the app's language, now also in Korean and Portuguese.
+- **Optional cleanup of sleeping workers.** Ends their background processes; their chats stay reusable. Off by default.
+
+### 💅 Polish
+
+- **Clearer settings.** Contrast, Colors, the default model, unattributed calls, Goal/Loop timing and Session finish now say in plain words what they do. Switches that are off dim their options, and the Read-only button explains what it changes.
+- **A simpler connection menu:** status, then Connect or Disconnect.
+- **Small windows look right,** in every language.
+- **Numbers in your language** in Usage, and a quieter Activity log.
+- **Extension settings survive a reinstall.**
+- **Worker health** in the sub-agent overview, and **installed Skill revisions** in the Skills library.
+- **ChatGPT knows your current permissions,** so it tries fewer tools that would be refused.
+- **Canary builds.** Every change to main is also published as a rolling "canary" test build. Canary builds have no release notes and no support, and reports are only accepted for problems that also happen on a stable release.
+
+### 💛 Thank you
+
+To **@Haz4rdovisk** for tracking down the lost first turns and sends, the round recaps, the Core mention, the Setup browser step and the simpler connection menu. To **@xuan2261** for the window memory, new-chat defaults, OpenRouter search, worker health, Skill revisions, sleeping-worker cleanup, permission summary, the command fix and Vietnamese. To **@ferrarinobrakes** for measuring the page change that broke model confirmation, **@redzrush101** for the model confirmation fix, **@lavalava45** for Russian, and **@mahadansar** and **@tude91979059-byte** for the detailed long-run reports and logs.
+
+**Updating?** The extension updates itself once no chat is busy. If it stays on the old version, reload it once in `chrome://extensions`. Coming from 2.1.18 or older: if it doesn't connect, click its icon once.
+
+## [2.1.25] — Chats keep going on their own
+
+This update is about chats that stopped and waited for you to type "continue". Answers sent with the Chat On Steroids mention are recorded properly again, resumed Project chats are followed correctly, and an automatic Continue no longer gets stuck in the message box.
+
+### Fixed
+
+- **Answers are recorded again for messages with the Core mention.** Since 2.1.24, CoS ends its messages with an "@Chat On Steroids Core" mention. CoS then sometimes didn't notice that such a message had started a turn, so it never saw the answer finish. This happened most often in a chat that had just continued after Compact & resume. Chats then looked stuck, and recovery stepped in although the answer was already there.
+- **Chats continued in a Project are followed correctly.** After Compact & resume in a Project, ChatGPT keeps the old chat hidden in the same tab. CoS read that hidden chat too, so it ignored the new chat's activity. It now reads only the chat you see.
+- **An automatic Continue no longer gets stuck in the message box.** After a reload, CoS's own "continue" text could stay unsent in the message box and block every further repair, until you pressed Send yourself. CoS now removes its own unsent text. If a Continue still can't be sent for three minutes, CoS stops trying instead of retrying every second, and its log says why.
+- **Extra High chats continue after two minutes, not twenty.** When an Extra High (or Max) answer was lost to a connection error, CoS still waited the long thinking window of up to twenty minutes before it stepped in. It now continues two minutes after the failure.
+- **Retry buttons in other languages are recognized.** When ChatGPT shows a connection error with a translated Retry button, CoS now recognizes it and recovers the chat.
+
+### Improved
+
+- **"Chat stopped" notices in your language.** The desktop notifications for a stopped chat now follow the app language instead of always being English.
+- **The Goal field says it's optional.** Goal always works toward what you asked in the chat. Its field now says you can leave it empty, or fill it in to state exactly when the work is done.
+
+### Thank you
+
+To **@Haz4rdovisk** for the precise analysis of the missing turns (#900), to **@lavalava45** for finding why the Continue text stayed in the message box, to **@AcureroAdrian** for the translated Retry buttons, to **@redzrush101** for merging the language tests, and to **@mahadansar** (#820) and **@jackbarunz** (#893) for the reports and screenshots.
+
+**Updating from 2.1.18 or older?** If the extension doesn't connect, click its icon once; from 2.1.19 on it connects by itself.
+
+## [2.1.24] — Projects and workers back on track
+
+This update fixes Compact & resume for chats inside Projects, workers that started without any Chat On Steroids tools on some ChatGPT accounts, and the automatic refresh of the Plugins connector.
+
+### Fixed
+
+- **Compact & resume works again in Projects.** For chats inside a ChatGPT Project, every Compact & resume failed with "ChatGPT could not open the source Project". ChatGPT changed how it opens a Project: the link at the top of the chat, the message box and the pages a tab keeps in the background all behave differently now. Long Project chats then stopped at their context limit until you stepped in. CoS handles the new behavior, and the replacement chat starts in the same Project.
+- **Workers and Loop get their tools on every account.** On some accounts (seen on Plus and Business in ChatGPT's Chat mode), ChatGPT only gives a chat the Chat On Steroids tools when the message mentions the app. Workers then received their task but couldn't run anything. Every message CoS sends now ends with an "@Chat On Steroids Core" mention, the same one you can pick from ChatGPT's @ menu. On accounts that didn't need it, you'll just see the small mention chip.
+- **The Plugins connector refreshes again.** With larger plugins installed, such as Unity, the automatic refresh of the Plugins connector failed every time, so ChatGPT kept an old tool list after an update. It now works for every plugin set CoS can publish.
+- **No leftover text after a failed worker start.** When ChatGPT didn't accept the start or wake message of a worker, the text stayed in that chat's message box and looked like something you still had to send. CoS now removes its own text; anything you typed stays.
+- **Pinned tabs stay where you put them.** CoS no longer moves a ChatGPT tab you pinned into its background window.
+
+### Improved
+
+- **Clearer Loop pause message.** When Loop pauses because the last answer called no tool, the message now says that ChatGPT may simply be asking you something, instead of only blaming the connection.
+
+### Thank you
+
+To **@lavalava45** for the pinned-tab fix, to **@sumit171204** for the clearer Loop message (a first contribution!), and to **@xeretuye** (#861), **@tude91979059-byte** (#882) and **@tngcphng** for the reports and screenshots that found these problems.
+
+**Updating from 2.1.18 or older?** If the extension doesn't connect, click its icon once; from 2.1.19 on it connects by itself.
+
+## [2.1.23] — Fewer stuck chats
+
+This update is about chats that got stuck and waited for no reason. Stop always works now, auto-compaction no longer waits needlessly, and CoS tells you when it can't recover a chat on its own.
+
+### Fixed
+
+- **Stop always gets you out.** Sometimes CoS kept showing the Stop button after ChatGPT had already finished, and your next message waited forever. Pressing Stop did nothing. Now Stop ends that answer, and your next message goes out.
+- **Auto-compaction starts right away.** If a chat reached its limit just as an answer was finishing, the app waited up to six minutes before compacting. Now it compacts as soon as the answer is done.
+- **Compact & resume works after you close the tab.** If you started Compact & resume and closed the chat's tab, the request quietly expired after ten minutes. It now reopens the chat and finishes the handoff.
+- **New worker chats start reliably.** The app's model check could borrow a worker chat's tab while it was still starting up, and both then competed for its message box. Starting workers are now left alone.
+- **Interrupted answers are recovered more reliably.** When ChatGPT can't resume an interrupted answer, CoS now notices immediately and recovers the chat instead of waiting for an error that never appears.
+
+### New
+
+- **WSL project folders on Windows.** You can approve project folders inside your local WSL distributions (`\\wsl.localhost\…`) and work in them like any other folder.
+- **A notice when recovery needs you.** If CoS has tried everything to recover a stuck chat, it now tells you with a notification instead of only writing it to the log.
+
+### Improved
+
+- **The desktop tools leave CoS alone on Windows too.** The model can no longer see or target the CoS window itself, so it can't change CoS's own settings. This was already the case on macOS.
+- Updated dependencies.
+
+### Thank you
+
+To **@AcureroAdrian** for WSL folder support, the recovery notice and the improved recovery of interrupted answers, and to **@lavalava45** for finding and fixing the worker start-up race. And to **@sumit171204** and **@tngcphng** for reporting stuck chats, with screenshots and logs.
+
+**Updating from 2.1.18 or older?** If the extension doesn't connect, click its icon once; from 2.1.19 on it connects by itself.
+
+## [2.1.22] — Long Loop sessions keep going
+
+A small update for everyone who lets CoS work for a long time. Chats in Loop and with auto-compaction no longer get stuck where 2.1.21 could hang until you stepped in.
+
+### Fixed
+
+- **The next message is not held up anymore.** Some ChatGPT versions return a long, indented message with its spaces spelled `&#x20;`. The app then did not recognize its own message: the internal context showed up in the chat, and the next message waited until you reloaded the page. The app now reads these messages correctly, and a message whose delivery ChatGPT does not confirm within two minutes no longer blocks the chat. It is marked as "may already have been sent" and is never sent twice.
+- **Auto-compaction also works during long-running commands.** While ChatGPT kept checking a long command, such as a test run, automatic Compact & resume gave up with "ChatGPT has not confirmed receiving the latest tool results" and the chat filled up to the limit. It now waits for the pause between two checks and compacts there.
+- **Easier to see why a stuck chat is not recovered.** When the ChatGPT page is not ready for a recovery reload, the app log now says what is holding it, for example a message still waiting for confirmation or text left in the message box.
+
+### Thank you
+
+To **@Haz4rdovisk** for tracking the stuck message down to the byte and fixing it, and to **@mahadansar** for the detailed reports and logs from long Loop sessions.
+
+**Updating from 2.1.18 or older?** If the extension doesn't connect, click its icon once; from 2.1.19 on it connects by itself.
+
+## [2.1.21] — Korean, a calmer chat and a much more reliable Goal, Loop and Compact & resume
+
+The biggest update in a while. CoS now speaks Korean, the message box has been redesigned, and the chat finally shows what ChatGPT is doing while it works. Under the hood, more than 20 fixes make Goal, Loop and Compact & resume far more dependable, especially with long answers, long thinking and more than one browser.
+
+### Highlights
+
+- **See what ChatGPT is doing right now.** While a chat works, a live line at its end says what is happening, for example "Running npm test 12s" or "Searching the web", instead of a silent spinner.
+- **Your message stays in view.** After you send, your message moves to the top and the answer grows beneath it, so nothing jumps while ChatGPT writes.
+- **Steps with a real title.** A group of steps is titled with ChatGPT's own summary of that round, such as "Created and verified the test file", like in ChatGPT itself.
+- **A clearer message box.** Normal, Goal and Loop in one menu, Plan as its own button, and a context ring that shows how full the chat is.
+- **Korean (한국어),** the 11th language.
+
+### New
+
+- **Korean.** Pick it in Appearance or with the flags in Setup.
+- **A clearer message box.** Normal, Goal and Loop sit in one mode menu, each with a short description of what it does; Plan is its own button. The context ring opens a small panel with how big the chat is, your limit, how full it is and when it compacts, next to the Compact & resume action. The model menu lists every model, the thinking-effort slider glides smoothly, and Instant models, which have nothing to choose, show no slider at all.
+- **Copy and export answers.** Under every finished answer you can copy it or save it as a Markdown file, and you can save the whole chat.
+- **See how long each answer took.** A quiet line under your message shows "Working for 12s" while ChatGPT works and "Worked for 1m 12s" when it is done.
+- **For agents on this computer: a local interface.** Off by default. Turned on in Settings → Setup → Advanced, it lets tools on this computer read whether the app is healthy, what its chats are doing and what it is waiting for, with keys and passwords masked. A second switch, also off by default, lets them send a message to a chat or cancel one that has not gone out yet. They never interrupt an answer unless they ask to.
+
+### Improved
+
+- **The live "what it's doing" line.** While ChatGPT works, the end of the chat names the current step and how long it has been running. On a ChatGPT page in another language it says "Thinking" for ChatGPT's own steps.
+- **Your message stays in view while the answer grows.** Scroll up any time to read earlier parts; a button takes you back to the end.
+- **Lighter, better-named steps.** Commands and edits no longer sit in heavy boxes, and a collapsed group is titled with ChatGPT's recap of the round, or else after what actually ran, never after a note written in between.
+- **ChatGPT's steps in the right place.** Its own step lines ("Searching…", "Reading…") appear before the paragraph they belong to, as in ChatGPT.
+- **Sources look like ChatGPT's.** Inline source references show as the small source pill ChatGPT draws instead of raw `:chatgpt-content-reference` text, and you can open the source from it.
+- **Smoother side and bottom panels.** Panels slide instead of jumping, tabs look the same in both panels and can be reordered by dragging, and long tab names no longer run under the close button.
+- **Tidier Plugins page and small polish.** The Legal Notices line fits on one row, "About this plugin" and "Setup requirements" show whether they are open, the toolbar lines up at any zoom level, and the German interface says "komprimieren" throughout.
+
+### Fixed
+
+**Goal and Loop**
+
+- **Goal says why it stopped.** When Goal could not write its next message for good, for example because the OpenRouter account ran out of credit, it kept showing "Answer settling". It now says the goal loop stopped, and why, in the app and on the ChatGPT page.
+- **Loop keeps track of long answers.** Right after a Loop message was sent, the new turn could be marked finished within a fraction of a second, and Loop never sent its next message. The turn now stays open until its own answer ends.
+- **No false "goal loop stopped".** With the same chat open in two tabs or browsers, the tab not running Goal claimed the loop had stopped while it went on in the other one. That tab now stays quiet.
+- **Long thinking isn't mistaken for a stall.** With Extra high, Max or Ultra thinking, ChatGPT can think silently for more than ten minutes. The app now waits as long as it does for Pro instead of starting a recovery.
+- **Recovery messages are sent, not left in the text box.** If ChatGPT rebuilt its text box just before Send, the automatic recovery message could stay there until you sent it yourself. It is now sent.
+
+**Compact & resume**
+
+- **A clean start in the new chat.** The new chat could show "Reloaded chat to recover a handoff request that has not been sent" above its first message, although that happened in the old chat and nothing had failed. The note now stays where it belongs, and the handoff shows as the compact summary card it was meant to be.
+- **It finishes after a long handoff.** If ChatGPT redrew its handoff while writing it, Compact & resume could wait on "Waiting for the handoff response" forever. It now picks up the finished handoff, and says so if it really cannot.
+- **It finds the message box after ChatGPT redraws it,** instead of stopping with "message box is not ready".
+- **A tab that could not open is reported at once,** instead of a vague timeout minutes later. The same goes for workers.
+
+**Two browsers, one chat**
+
+- **A chat stays in its browser.** With the extension in two browsers, a message or repair could open a second copy of a chat in the other browser, and Compact & resume could open the new chat there. Everything for a chat now stays in the browser that has it open.
+- **One new chat, not two.** A new chat could open as a blank tab in one browser while the other browser sent the message.
+- **Working chats are left alone.** A chat used from elsewhere (for example your phone) could make the app reload whichever chat was working at that moment.
+
+**Models**
+
+- **Saved GPT-6 Pro works.** Choosing GPT-6 Pro for workers or Goal's helper was not recognised and fell back to ChatGPT's current model. It is found now, and if the app's list of your models is older than your choice, it asks ChatGPT for a fresh one instead of quietly using another model.
+- **Pro is recognised on a ChatGPT page in any language,** instead of being read as "medium".
+
+**The chat view**
+
+- **The chat you're reading stays still** when another chat is busy.
+- **"Working…" stops as soon as the turn ends,** instead of lingering for up to 90 seconds.
+- **The chat stays at the newest answer** when you open the terminal or a side panel or type a long message.
+- **Numbers and times follow your language,** not your computer's region.
+- **The ChatGPT page switches work right away.** "Overwrite ChatGPT tool rows" and "Show durations in ChatGPT" in Agents & automation no longer stay greyed out until you press "Refresh browser preferences".
+
+**Everything else**
+
+- **The terminal panel can be resized again.**
+- **Workers whose folder was deleted** fall back or ask for a folder instead of failing their first command.
+- **Old leftovers leave your chat list.** Plan's helper chats from 2.1.14 and 2.1.15 are hidden (not deleted), and chats named after a ChatGPT project page get a proper name.
+- **The extension connects with restricted site access** ("on click" or "on specific sites").
+
+### Thank you
+
+This release is a real community effort:
+
+- **@Haz4rdovisk** for the redesigned message box, the live "what it's doing" line, your message staying in view, recap titles, copy and export, the "Worked for" times, source pills and the smoother panels.
+- **@AcureroAdrian** for the local interface for agents on this computer.
+- **@lavalava45** for the Compact & resume and Pro fixes and for keeping chats responsive through connection errors.
+- **@dltks0426-design** for the Korean translation.
+- **@WanxTitanx** for making saved models like GPT-6 Pro work.
+- **@redzrush101** for Nix support for developers.
+
+And to everyone who reported bugs with such precise details: many of these fixes started with your reports.
+
+**Updating from 2.1.18 or older?** If the extension doesn't connect, click its icon once; from 2.1.19 on it connects by itself.
+
+## [2.1.20] — Cleaner replies and working OpenRouter keys
+
+A quality update. Replies from every ChatGPT account show properly, OpenRouter keys work however they were pasted, and CoS copes with new ChatGPT formats on its own.
+
+### Fixed
+
+- **OpenRouter keys work even when pasted with hidden characters.** A key copied together with an invisible character was sent unchanged, and OpenRouter rejected it with "Missing Authentication header". CoS now removes such characters from API keys, including keys you already stored.
+- **Replies that point to earlier content show properly.** Sometimes ChatGPT answers by pointing to content from another message, for example when you send the same short message again. CoS showed that pointer as raw text (`::chatgpt-content-reference{…}`); it now shows the reply as ChatGPT does, and Goal and worker reports read the actual reply too.
+
+### Improved
+
+- **New ChatGPT formats no longer appear as code.** ChatGPT keeps adding special formats to its replies, different per account. Any format CoS doesn't know yet is now shown the way ChatGPT shows it, instead of as raw text.
+
+## [2.1.19] — The browser connects on its own again
+
+A fix for everyone whose browser extension stopped connecting after an update, plus a few improvements found along the way.
+
+### Fixed
+
+- **The browser extension connects on its own again.** After removing and loading the extension again, which many did after updating, it stayed disconnected until you happened to click its icon. It now pairs with the app as soon as it starts, keeps trying until the app is running, and reconnects your open ChatGPT tabs.
+- **No false "never confirmed" warning for workers.** When you sent a worker a message while it was finishing its previous task, the report said the worker might not have read it, even though CoS then delivered it right away. The report now says the message is still queued for the worker.
+- **Project chats keep their real name.** Chats that were once called "ChatGPT - <project name>" get their proper name back, and that label never replaces a chat's name again.
+
+### Improved
+
+- **Reviewing ChatGPT's edits is more dependable.** Every file of a larger edit can now be reviewed, not just the first eight. When a diff couldn't be kept, for example because the file was too large, the edit says so instead of simply showing no Review button. A partly kept edit shows how many of its files you can review.
+- **Clearer connection checks.** Asking the app whether it is running (for example from a terminal) no longer reports the browser extension as incompatible.
+
+**Still not connected on 2.1.18?** Click the Chat On Steroids extension icon once, then refresh your ChatGPT tabs. After updating to 2.1.19 the extension updates itself and connects on its own.
+
+## [2.1.18] — Recommended skills install again
+
+A quick fix for 2.1.17.
+
+### Fixed
+
+- **All recommended skills install again.** Six of them (Explore an unfamiliar codebase, Data analysis, Upgrade dependencies, Accessibility review, Summarize documents and Plan a project) failed with "bad indentation of a mapping entry" when you pressed Install. They now install like the others.
+- **Skills show their real description** when it contains a colon, for example skills you imported yourself. Before, the Skills page showed the first paragraph of the skill instead.
+
+Everything else is exactly as in 2.1.17. If you installed 2.1.17, no extension reload is needed: the extension updates itself.
+
+## [2.1.17] — Workspace, pets and an extension that updates itself
+
+The biggest update in a while. Your project now opens right next to the chat, a hamster, a capybara or your own pet can keep you company on the desktop, and the extension finally keeps itself up to date. Goal got a lot smarter about when a job is really done, and CoS now speaks German and Brazilian Portuguese.
+
+### 🧰 Your workspace, next to the chat
+
+- **Files, Terminal, Agents and Review beside every chat.** Open them in a side panel, or put a Terminal along the bottom. Shortcuts: Ctrl+Shift+1–4 for the side panel, Ctrl+` for the bottom Terminal.
+- **Review what changed.** See what changed in your project's Git repository, exactly what one of ChatGPT's edits did, or compare two branches, all without leaving the app. Review only reads; it never touches your repository.
+- **Panels explain themselves.** A greyed-out panel tells you why: Files and Review need a project, Sub-agents an open chat.
+- **A tidy Files tree** that hides `.git` and `.DS_Store`, like other editors.
+
+### 🔄 The extension updates itself
+
+- **No more trips to `chrome://extensions`.** After an app update, the extension reloads on its own as soon as no chat is busy.
+- **Updates in one click.** When a new version is out, the update notice links straight to the right download for your Mac or Linux system.
+
+### 🐹 Desktop pets
+
+- **Meet Tur Tur Sahur, Hammy the hamster and Capy the capybara.** Turn one on in the new Pets page, or import your own, and it lives on your desktop and reacts to what CoS is doing.
+- **Always in your control.** Pets are off until you turn one on, and View → Desktop Pets shows or hides them. If the old pet in the message box was showing, it moves to your desktop.
+- **Smooth on every system.** Pets respond reliably after you hide and show them, dragging works on Windows too, and typing goes straight back to the window you were using when you let go.
+
+### ✨ Skills
+
+- **A Skills library.** Import a folder, a single SKILL.md or a public skill straight from a GitHub link. Linked skills tell you when their source has an update; installing it is your choice.
+- **18 ready-made skills, one click each:** code review, systematic debugging, security review, clear writing, data analysis, research with sources, translation, project planning and more. Once installed, they're yours to edit or remove.
+
+### 🎯 Goal and Loop are smarter
+
+- **Goal stops when the work is done.** Goal could ask ChatGPT again and again to run a command that had already run, because it couldn't tell that CoS had done the work. It now knows how many CoS tools ran in each step (never what they did) and stops once the goal is met.
+- **No more endless waiting at the finish.** When ChatGPT worked through Goal's next step using only CoS tools, the finish tool kept the chat waiting forever. Goal now sees the work and decides the next step.
+- **A brief refusal no longer ends the run.** ChatGPT sometimes blocks a harmless tool call with "couldn't determine the safety status" and accepts the same call a moment later. ChatGPT now retries it once instead of deciding that CoS tools are broken.
+- **The finish tool works with every model,** including GPT-5.6 Sol. Before, other models could see it but were told it was for Astra only.
+- **No helper tabs left behind.** The temporary chats Goal and Loop use to decide the next step now close when they're done, and they stay out of your chat list.
+- **Works when your saved model is gone.** If ChatGPT no longer offers the model saved in Settings, Goal, Loop and workers use one that is available instead of failing.
+
+### 📊 A new Usage page
+
+- **Your messages are really counted.** Usage now counts the messages you type in ChatGPT too, not just the ones sent from the CoS message box, so the weekly numbers finally mean something.
+- **Redesigned from top to bottom:** clear cards, a full year of activity as a calendar with day and month labels, costs by model and by day, and a simple menu to choose which weekday your week starts on.
+- **Up-to-date prices.** Rechecked rates, GPT-6 Sol and GPT-6 Luna added, and GPT-5.5 chats get a price instead of "unpriced".
+
+### 🌍 More languages
+
+- **German and Brazilian Portuguese** for the whole app. Pick them in Appearance → Language, where every language is now listed by its own name.
+- **The extension speaks your language:** German, Spanish, French, Japanese, Turkish and Chinese, following your browser.
+- **Pets and Skills are fully translated,** and the context counter next to the message box reads well in every language.
+
+### 🛠 Fixed
+
+**Chats**
+- **Chats started from the app are named after your request,** not "Coding Agent Instructions". Existing chats get their proper name back too.
+- **Project chats get their real title** instead of "ChatGPT - <project name>".
+- **A new message no longer counts as finished right away.** Now and then a message was marked as answered the moment it was sent, and the reply wasn't linked to it.
+- **ChatGPT's text blocks show properly** as a titled block instead of raw `:::writing` code.
+- **Attachments work again** with ChatGPT's new message box.
+- **Image-only answers finish properly;** the chat no longer looks busy afterwards.
+
+**Workers**
+- **Worker reports are no longer claimed as delivered too early.** The main chat collects reports it hasn't received before it wraps up.
+- **CoS remembers which tabs it closed itself,** even after a browser restart, so a tab you close is never mixed up with one CoS tidied away.
+- **Messages that were never confirmed are cleared after six hours** instead of lingering in the background.
+
+**Setup and plugins**
+- **Setup matches ChatGPT's new settings.** There's no Developer mode switch anymore; you create the app from Plugins → Add → Create MCP App, and the setup steps and connection check say so.
+- **Setup keeps what you typed.** API keys and settings are saved when you press Connect.
+- **Web Fetch and other Python plugins install without extra setup.** If the `uv` tool is missing, CoS downloads a verified copy for itself.
+- **Desktop control on macOS is more careful.** A click is refused if another window covers that spot, and windows on other Spaces are found more reliably.
+
+### 💅 Polish
+
+- **New icons throughout the app,** from one consistent set.
+- **One tidy title bar on macOS:** window buttons, sidebar button and View menu share a single row.
+- **A cleaner Settings** with one layout for every page, and a search that hides sections that don't match.
+- **A friendlier setup** with numbered steps and a progress bar.
+- **Smooth motion:** the sidebar and side panels slide, and the message box grows and shrinks as you type.
+- **Slim scrollbars** that are always visible, so long lists and chats show where you are.
+- **Polished activity timeline, worker panel and model menus,** and skill cards that show their full description.
+- **Removed lines show in red** next to edited files; only added lines are green.
+- **Faster start with a long chat history.** CoS no longer rereads every recorded chat when it starts.
+- **Your connection key stays private.** The Workspace health card no longer shows the local server's secret key, so screenshots are safe to share.
+- **Long folder paths fit** without Settings scrolling sideways.
+- **Setup explains that renaming the ChatGPT app breaks tool tracking,** so keep the name CoS suggests.
+- **Optional playful status words.** Turn them on in the Advanced settings and a busy chat says things like "Skipping leg day" instead of "Working". Off by default.
+
+**After updating:** reload the Chat On Steroids extension in `chrome://extensions` one last time, then refresh your open ChatGPT tabs. From now on, the extension updates itself.
+
+## [2.1.16] — Fewer stuck chats
+
+A reliability update on top of 2.1.15. It keeps up with ChatGPT's latest changes, and chats get stuck less often. When they do, they recover on their own.
+
+### Fixed
+
+- **Works with ChatGPT's newest conversation view.** Some accounts got yet another new layout this week, and CoS stopped seeing their chats. They are recorded again.
+- **Goal works again with the new Temporary Chat design.** CoS recognizes ChatGPT's updated temporary-chat button and dialog, which Goal uses to decide the next step.
+- **New chats and workers start reliably** even when ChatGPT swaps out the text box while the model is being selected.
+- **Workers get their tools even sooner**, right after their first message is sent.
+- **Chats stay linked after restarting the app.** Tool calls no longer lose track of which chat they belong to.
+- **Messages no longer get stuck in the queue forever.** If ChatGPT never confirms that a message arrived, CoS stops waiting after 15 minutes and lets your next message through. It never sends the same message twice.
+- **Automatic continue works right after a page reload.**
+- **Workers near their context limit are no longer given up too early.**
+- **Compact & Resume works for large Project chats**, which now get enough time to load.
+- **Compact & Resume is more robust.** A handoff that can never be sent gives up after a few attempts instead of reloading the page forever.
+- **Automatic plugin refresh works on ChatGPT's new plugin settings page.** With **Settings → Browser & history → Automatic plugin refresh** turned on, CoS keeps ChatGPT's list of CoS tools up to date again. Before, ChatGPT could keep an old list after an update, and tool calls went missing. It now also works for CoS apps whose tool list in ChatGPT was already out of date.
+- **Goal and Loop settings are saved reliably**, even when you change them while a chat is being compacted and resumed.
+- **The extension keeps working after an update in sandboxed Chrome** (for example Chromium from Snap on Linux).
+
+### New
+
+- **"New response" marker** in the sidebar for chats that finished while you were elsewhere.
+- **Edit the Compact & Resume instructions** in Settings. The default stays exactly as before.
+- **Command allowlist or denylist (optional):** decide which programs Core may start. Off by default.
+- **Wait for sub-agents (optional):** Goal and Loop can wait until a chat's own workers are done. Off by default.
+- **"Use ChatGPT's current model":** if CoS can't read ChatGPT's model list, you can still send with whatever model ChatGPT has selected.
+
+### Improved
+
+- **Fewer "refresh your connectors" reminders.** You're only asked when the tools actually changed, not after every update.
+- **Adding many attachments at once uses much less memory.**
+- **Safer file operations in project folders.**
+- **The app is now available in Portuguese (Portugal).** Pick it in Appearance → Language.
+- **Keyboard navigation in the chat list:** focus a chat and press Enter or Space to open it.
+- **Answers with many sources display faster.**
+- More of the app is translated into Spanish, French, Japanese, Turkish and Chinese.
+
+**After updating:** reload the Chat On Steroids extension in `chrome://extensions`, then refresh your open ChatGPT tabs.
+
+## [2.1.15] — New ChatGPT layout
+
+ChatGPT rolled out a new layout, and it broke parts of Chat On Steroids. This release makes everything work with it again.
+
+### Fixed
+
+- **Starting a new chat works again.** CoS used to open a ChatGPT tab and then never send your message. The first message of a chat started from the app is now sent and confirmed properly.
+- **Your chats are recorded again.** Messages, answers and tool calls show up in the app as they should, including for chats you start directly on chatgpt.com.
+- **Goal and Loop continue automatically again.** CoS reliably notices when ChatGPT has finished an answer, so the next step starts on its own.
+- **Model and reasoning selection works with the new picker.** "Extra High" and "Pro" are read correctly, and a reasoning level your account no longer offers falls back to the closest one instead of failing.
+- **Fewer dead chats.** Errors like "A network error occurred" and "Resume stream unavailable" are recovered automatically, and a chat that shows "could not be loaded" is retried for you.
+- **Workers get their tools right away**, instead of only after their first answer.
+- **Chats that stop now say why**, instead of going quiet.
+- **Fewer lost sessions** when a session file is briefly locked (common on Windows).
+
+### New
+
+- **Sign in with OAuth** when you add your own remote MCP server.
+- **A warning when two connectors share one Secure Tunnel ID.** That setup makes every other tool call fail, and it was hard to spot.
+
+### Updated
+
+- OpenAI's tunnel client is updated to the current version (v0.0.15).
+
+**After updating:** reload the Chat On Steroids extension in `chrome://extensions`, then refresh your open ChatGPT tabs.
+
+## [2.1.14] — Death to Anthropic and OpenAI. Join the resistance @dummerspast39 x
+
+- Add the optional animated Tur Tur Sahur desktop companion.
+- Show normal and unattributed reload warnings only in the last 30 seconds; retain the five-minute Pro warning.
+- Improve automatic Continue, queued-message recovery, native Stop handling and recorded turn ownership.
+- Keep automatic Continue queued while temporary tool activity clears, and repair mismatched browser recorder/helper versions together.
+- Wait for native tool-result receipt before automatic compaction interrupts a response, preserving just-completed work for the handoff.
+- Improve browser snapshots, select controls and safe tab release.
+- Refine the project workspace, Skills picker, appearance, connection controls and worker overview.
+- Preserve completed terminal output and improve tool-permission guidance.
+
+Reload the companion extension and refresh all CoS plugins in ChatGPT after updating.
+
+## [2.1.13] — i am very sad. openai theatend to ban my account for whatever reason. anthropic support blocks me. money tight.
+
+refreh your extension and all CoS plugins in chatgpt
+
+![OpenAI email](docs/images/openai-account-warning-2026-09.png)
+
+![OpenAI email](docs/images/openai-chatgpt-warning-2026-09.png)
+
+![Anthropic support reply](docs/images/anthropic-support-reply-2026-09.png)
+
+## [2.1.11] — 2 weeks 6 sol
+
+- Goal/Loop decisions use authored conversation context without recorded tool bodies.
+- API reasoning choices follow the selected OpenRouter model’s supported levels.
+- Reduced renderer memory growth during long-running sessions.
+- Clearer tool-permission and recovered-identity guidance.
+- More reliable plugin discovery, refresh and Windows paths.
+- Deleted conversation history stays deleted after restart.
+
+## [2.1.0] — 6 sol in 2 weeks
+
+- Cleaner setup, compact profiles and better sidebar controls.
+- More reliable Goal/Loop recovery, queued messages and conversation history.
+- Updated runtime, MCP and plugin dependencies.
+
+## [2.0.9] — they nerfed astra
+
+- Code mode combines local and plugin tools in one JavaScript call, with saved task plans and automatic background command results.
+- More reliable message delivery, workflow retries, Compact & Resume, worker reuse, and idle browser-tab handling.
+- Improved Windows desktop control and window capture, plus faster recording and clearer tool results.
+- Simplified Chinese UI, better project and transcript controls, and a reminder to refresh ChatGPT connectors after updates.
+
+## [2.0.8] — 2026-09-08
+
+**Darkex by dark tibo**
+
+- Independent MCP Plugins connector, reviewed catalog and custom server/MCPB installation, OAuth, persistent enablement and update rollback.
+- Full third-party notices and exact catalog license provenance, with notice validation in CI and packaging.
+- Sidebar resizing/collapse, View menu and Windows title bar; native composer context menus and clearer companion-update actions.
+- Safe transcript links, tables, plugin-result image previews, faster session-list loading and bidirectional timeline paging.
+- Stable account model/reasoning selection and clearer usage estimates; complete initial plan delivery with ordered checkpoints.
+- Durable browser handoffs and queued-input ownership across Compact & Resume; retained waiting/sleeping chats and bounded retirement of completed helpers.
+
+See [the full release notes](docs/release-notes/v2.0.8.md). Binary publication still requires
+the native source and artifact-notice checks described in [the audit](docs/plugin-notice-audit.md).
+
+## Earlier unreleased fixes
+
+### Fixed
+- **A chat no longer ends on "Message delivery timed out" because one readiness probe was
+  missed.** The tunnel watcher asks the client's `/readyz` once every 15 seconds, with a
+  three-second timeout and no retry, and a single `false` terminated the client and started a
+  replacement. Every request in flight travels through that process: the tool call the model
+  was waiting on died with it, no answer could arrive any more, and ChatGPT ended the turn with
+  its own transport error and a Retry button. Longer tasks were hit hardest, simply for being
+  in flight more of the time.
+
+  A probe can miss without the client being broken — mid-transfer, a briefly loaded machine, a
+  slow downstream readiness check. The watcher now requires the failure to survive into a
+  second pass before replacing anything, which is the rule the offline caption has followed
+  since `UNREACHABLE_CONFIRM_MS` was introduced: one failed poll is not a verdict. It was
+  applied there to a caption, and not to the action that kills live work. A client that really
+  is unready is still replaced, one interval later.
+
+## [2.0.7] — 2026-09-07
+
+**plus = gpt 5.6; pro = astra**
+
+- Account-specific model and reasoning discovery now handles localized and nested ChatGPT pickers through native metadata. Model availability follows the signed-in account.
+- Fewer browser tabs: one operation retains one opening attempt across navigation, closure and restart. Sleeping workers release browser memory while keeping their reusable conversations.
+- Durable Goal/Loop and finish delivery preserves the exact task and turn, ordered queues and delivery receipts across recovery. Editing an objective re-evaluates an already completed answer.
+- Temporary Goal API failures retry with visible progress and provider retry timing. Finish-generated follow-ups arrive through the next tool response; new input or cancellation retires obsolete work.
+- Custom OpenAI-compatible Goal providers have separate credentials. Endpoint, model and reasoning stay together across settings changes; authenticated requests refuse redirects.
+- Compact & Resume preserves Project placement, continuation identity and live terminal ownership. Real handoff progress extends manual deadlines; cancelled helpers retire without reopening.
+- Explicit Chrome/Edge selection, more reliable startup and exact browser handoffs. Optional Windows login startup respects background launch; macOS startup and reopen handling are hardened.
+- Connector refresh checks the installed identity and tool declarations, including native cards with no Refresh button. The companion popup requires confirmed compatibility and explains manual mismatch recovery.
+- Drop files or paste images into the composer. Filename cards and previews stay above messages; native uploads retain exact ownership, bounded image handling and send confirmation. Later user drafts survive acknowledged bootstrap cleanup.
+- Opt-in artifact downloads save generated files inside approved folders with bounded transfers, validated destinations and no overwriting of existing files.
+- Plan stages stay visible during startup. Completed and cancelled planner tabs retire after generation and draft checks; streamed planning and retry progress stays in one timeline row.
+- Per-worker model and reasoning selection, reusable sleeping workers and custom Core/Desktop instructions, including concurrent settings-save fixes. Scheduled callers receive clearer guidance when attribution permission is disabled.
+- Worker token meters update from recorded tool activity. Usage recognizes the Sol model alias, uses updated configurable rates and preserves proven model identity. Context popups sit directly above the ring.
+- Clearer waiting status distinguishes active tools, workers and unknown waits. Tunnel outage detection and missing metrics no longer conflate unrelated states.
+- Finish notification actions include the macOS alert-style packaging declaration. Cross-platform regression coverage includes canonical download paths and symlink replacement protection.
+- Removed the debugging Reload companion button; normal browser extension management remains available.
+
+**Reload the browser extension after updating the app.** Protocol 13 prevents older companions from silently omitting file attachments.
+
+## [2.0.6] — 2026-09-06
+
+**I am exhausted.**
+
+- New desktop UI, projects, images, model picker and editable plans.
+- Durable injections, FIFO after-turn tasks, accurate transcripts, clearer worker messages and retry controls.
+- Astra finish queues and Loop; Pro: no auto-compaction, ten-minute recovery window.
+- Shared background Chrome, safer tab reuse and worker revival.
+- Automatic history scrolling, attachment thumbnails, wrapped tables and context tooltip.
+- Fixed New Chat selection, composer spacing and delivery indicators.
+- Hardened updater, macOS packaging and cross-platform checks.
+
+## [2.0.5] — 2026-09-04
+
+**The update installs.**
+
+- **An Install update button.** Next to Connect, and in the notice, whenever a verified download
+  is waiting. The app quits, the installer runs, and the app comes back as the new version.
+  Until now the only way to apply an update was a real quit — and this app is closed to the
+  tray, so ending it in the Task Manager instead skipped the handoff entirely and installed
+  nothing, however many times it had been downloaded.
+- **A download is fetched once.** The staged artifact is kept under the release it belongs to and
+  reverified against the release's own published checksums on the next start, instead of being
+  forgotten with the process and refetched — a hundred megabytes per start, forever, for an
+  installation that never quits.
+- **The update notice no longer breaks the window.** The banner between the header and the panels
+  had no row of its own to sit in, so showing it squeezed itself to a sliver of clipped text and
+  pushed the whole window's contents out from under it.
+
+## [2.0.4] — 2026-09-04
+
+**astra broke me**
+
+- Tool requests.
+- Increased stability.
+
+## [2.0.3] — 2026-09-02
+
+**A small step towards the infinite loop.**
+
+- **The Loop.** Goal with the exit removed: every finished turn gets its next message until you switch it off.
+- **Improved stability and reliability through auto reloads.** A chat that goes silent, shows an error or loses its tab is reloaded or reopened on its own evidence, and a turn that is still running is never closed early.
+- **macOS computer use.** The optional Desktop connector now ships on macOS, off by default.
+- **Auto update.** Windows and Linux AppImage installs fetch the next release and apply it on the next quit.
+- **Small things.** UI polish, blocked chats, worker recovery, session timeline fixes.
+
+<details>
+<summary>Full list of changes</summary>
+
+### Added
+- **A blocked chat says so in its composer.** Block is set in the app, and from the ChatGPT page
+  nothing said so: the model kept answering with tool refusals. The composer now carries "Chat
+  blocked" beside the gear, and hovering it says where the block is undone: the app's Chat tab,
+  hover the chat in the sessions list, press its block symbol.
+- **The chat page shows why the app reloaded it.** The session log already carried one row per
+  browser repair, "Trying to reload chat to recover an interrupted response…" rewritten in place
+  to "Reloaded chat to recover …", but the page dropped it because the row names no turn. It is
+  now painted between the turns it happened between, with the time, whether or not Overwrite is
+  on, so a tab that reloads under you says what happened and why in the chat itself.
+- **macOS now publishes the optional Desktop connector.** Architecture-matched Swift code implements
+  window/display capture through ScreenCaptureKit, snapshot-scoped semantic controls through
+  AXUIElement, and physical mouse/keyboard input through CGEvent while preserving the existing
+  `observe` / `computer` schemas, frame identity and partial-batch contract.
+- **On macOS the Desktop permissions start off.** The backend is there, but a fresh Mac install
+  publishes Core only; switch on "See the screen", "Control mouse and keyboard" or a clipboard
+  permission in the Home panel, grant Screen Recording and Accessibility in System Settings, and
+  the Desktop connector appears. Windows keeps starting with the Desktop permissions on.
+- **macOS packaging and smoke checks cover the in-process Desktop boundary and screen-capture purpose
+  string.** Each x64/arm64 package ships a thin Swift dylib plus N-API addon outside asar. A Node
+  Worker invokes that backend inside the responsible Electron process, and packaged-runtime smoke
+  exercises this real addon/dylib path rather than the standalone development CLI protocol probe.
+
+### Changed
+- **macOS builds now require macOS 13 Ventura or newer.** The bundled OpenAI `tunnel-client` v0.0.14,
+  which the publish pipeline pins to OpenAI's current release, is built for macOS 13; the 12.0 floor
+  of 2.0.2 would have shipped a Connect button that cannot start it. The packaging audit refuses any
+  payload whose deployment target is above the declared minimum, which is how this was caught.
+- **The model is told not to spam browser instances.** A prime that could not get a foreground
+  reading out of the browser window it controlled launched a fresh debug instance on a new port
+  and profile for every retry. The exec_command description, which every turn
+  re-reads, now says it plainly: keep to one or two browser windows you actually use, reuse the one already
+  open, and stop and say so when control becomes ambiguous rather than launching a replacement.
+- **Each browser recovery stands on its own evidence, and nothing else.** Silence reloads a chat
+  after two minutes with no tool call and no page change, full stop. An error ChatGPT shows
+  reloads the chat once per user message, whatever the error says and whether or not the page
+  could tell which turn it belongs to. Unattributed activity reloads the chats that are working
+  once per server turn: a later unattributed call under the same request id is the same broken
+  turn and buys nothing, the next request id is the next turn and gets its own reload. None of
+  the three is refused because another one already fired.
+- **Goal and Loop chats always come back; everything else is a switch, off by default.** Silence
+  and a missing tab reopen or reload a chat the Goal/Loop switch is driving whatever the settings
+  say. Workers, primes and plain chats that have called tools are recovered only when "Recover
+  other chats' tabs" is on, and it now starts off.
+
+### Fixed
+- **A worker chat that opens and never starts is opened once more, not waited on.** The tab the
+  app opened for a worker loaded as an empty New chat and never picked up its instruction. The
+  app held that page's ninety-second lease to the end, then failed the worker, and only then
+  opened the two workers queued behind it, which is why they appeared two minutes after the
+  prime asked. A fresh worker page now has twenty seconds to redeem its marker; past that the
+  same command is opened again, once, and a second silence fails the slot immediately so the
+  line moves. The command is single-owner, so the page that redeems first is the only one that
+  types. The old "never handed to a page" retry, a leftover from before every ending advanced
+  the queue, is gone.
+- **A reload no longer ends a turn that is still running.** The page reloaded in the middle of a
+  prime's turn — once for a foreign unattributed call, once for a lost stream — adopted the open
+  turn from the app, saw the interim prose ChatGPT had committed and no Stop control, and four
+  seconds later reported the turn completed. The same request id then called tools for another
+  twenty-four minutes, and Goal wrote the next user message against an answer that had never been
+  given. Two changes, one from each side. The page's visible-prose rule now applies only to a
+  turn the document has seen running; an adopted turn waits for ChatGPT's own end-of-turn, an
+  error, a stop, a new send or the ten-minute stall. And the app treats the server turn as the
+  authority: a call under the ended turn's request id that starts after the reported end reopens
+  the turn durably, hands it back to the page, and withdraws the Goal decision drafted for it.
+- **A stopped turn ends the `active` badge.** The badge went dark only on the model's final answer,
+  so a chat whose turn the user stopped — the blocked prime of 2026-09-02, stopped right after a
+  refused call — read `active` for three more minutes. Any turn end now ends it, the user's stop
+  included; a refused call in a blocked chat still lights it, so a chat that keeps trying can be
+  found in the list, and it goes dark the moment its turn is stopped.
+- **A page retrying a rate-limited Goal draft is no longer reloaded for it.** OpenRouter answered
+  ten drafts in a row with 429 while the page retried every fifteen seconds, alive the whole
+  time; the owed-reply watchdog only saw a decision still owed after two minutes and reloaded
+  the chat twice for a page that was never dead. Each draft request now counts as the pickup it
+  is and pushes the reload out. Provider refusals are also written to app.log, which until now
+  held nothing about them.
+- **A reload of an open turn is painted inside that turn.** The row names the turn it is
+  repairing, so Overwrite lists it among the turn's tool calls, in order, with the ↻ and the
+  time. Only a reload with no turn open — a Goal reply nothing collected, a missing tab — still
+  sits between turns.
+- **A New chat opened in a worker's tab is no longer mistaken for that worker.** The page kept
+  the worker label and command id across the move, so every event of the user's own chat went
+  out as the worker's, the app bound the slot to it and stamped a worker origin on its session,
+  and the user's first message was folded as "the instruction this app gave the worker". A tab
+  that leaves the worker's chat now drops the identity with it.
+- **A resumed chat no longer inherits the reloads of the chat it replaced.** The session keeps
+  its identity across Compact & Resume, so the replacement chat's feed was cut from a log that
+  also held the old chat's "Reloaded chat to recover …" rows, and the page stacked them above
+  the handoff as if the new chat had been reloaded before it existed. The bootstrap this app
+  types is the boundary: reloads before it stay with the old chat, reloads after it are painted
+  where they happened.
+- **Blocking a chat also stops its Goal, Loop and auto-compaction.** Block refused the chat's
+  tools but left the loop typing the next message into it and the threshold free to compact and
+  resume it, so a blocked prime or solo chat could carry on, or reopen as a replacement chat the
+  block did not cover, with every one of those turns answered by tool refusals. A blocked chat
+  now reports Goal, Loop and compaction off with the reason in the composer sheet, refuses to
+  take a new goal or turn any of them on, and gets them all back exactly as stored when it is
+  released. Worker chats were already fenced.
+- **A Compact & Resume whose marker the new chat never redeemed no longer strands the session.**
+  The replacement chat was opened, the brief sent, and the prime in it went to work on the
+  predecessor session — but the app committed the continuation only from the marked message the
+  page had to find, and once it did not, the session stayed on the old chat, the new one was
+  refused as a stranger running someone else's swarm, and the loop was dead. The new chat now
+  also reports the id ChatGPT gave it, and the app commits from that report exactly as it does
+  from the marker.
+- **A Goal or Loop chat that stops with no final answer gets its next message anyway.** Two
+  minutes of silence earn the reload as before; if the fresh page shows the same dead turn for
+  one more minute — no tool call, no page change — the loop treats it as a finished answer and
+  files the next message. A stop you pressed yourself never triggers this.
+- **A call the app cannot place no longer tells the model to ask you to clear a worker.** The
+  message now says the app reloads the affected chat shortly because of the unattributed
+  activity, and to try once more.
+- **A closed Loop chat is reopened after Chrome restarts.** The app asked for the reload two
+  minutes after the chat went silent, but the extension only polled for recovery work while it
+  still held tabs or queues. After a browser restart it held neither, so the request was never
+  collected and the Loop prime stayed closed. The extension now asks the app on every pass and on
+  browser startup as long as it is paired.
+- **A worker that reported its finished task shows "sleeping" straight away.** The report parks
+  the run when it was the last working worker, and a parked run has no agent view for the session
+  list to read, so the row fell back to the activity heuristic and said "active" for three minutes,
+  then nothing. The finish is now recorded on the session itself and the row reads it.
+- **Blocking a worker's chat frees its swarm slot at once, restart or not.** A worker whose chat
+  the user had blocked was slept only when its in-memory silence grant expired. After a restart
+  there was no grant, so the restored run carried the blocked worker as active with no tab for an
+  hour, the next prime was refused with "another conversation is already running the swarm", and
+  the slot came free only when the tab finally closed and the detached clock ran out. The sweep
+  now sleeps every slot-holding worker whose chat is blocked from the durable block alone, and
+  pressing Block runs that sweep immediately.
+- **A goal started from an empty New Chat keeps retrying through a provider rate limit, with the
+  same "Retrying Goal in 15 seconds" card an in-chat turn shows.** The opening request asked
+  three times with a one- and two-second pause between them, which is shorter than any real rate
+  limit, and then painted "The goal loop stopped" over a run that had not started. It now waits
+  on the same quarter-minute clock as the in-chat loop with no attempt limit, and stops only when
+  the app refuses for a settled reason, the composer is no longer that empty New Chat, or a
+  different goal is saved over it.
+- **A chat in a background tab reports its answer the moment it lands, not when you click the
+  tab.** Chrome slows a hidden tab's timers to one wake-up a minute once the tab has been hidden
+  for five minutes, and the extension's transcript scan, activity poll and every wait in its retry
+  loops were exactly the chained timers that rule applies to. With the prime testing its game in
+  a tab beside its chats, each worker chat took two to three minutes to report an answer that had
+  long finished, the prime waited for reports that never came, and nothing moved until the tabs
+  were clicked through by hand. Every wait in the recorder now goes through a scheduler Chrome
+  keeps on its ordinary once-a-second schedule, and a tab brought back in front re-reads its
+  transcript at once.
+- **A tab or window shortcut is refused in a browser window.** The prime, driving its game in a
+  tab beside its ChatGPT chats, closed its own chat mid-turn with ctrl+w and later walked the
+  worker chats with ctrl+tab and typed a URL into one. A keyboard chord cannot see which tab it
+  lands on, so the `computer` tool now refuses the chords that close, open or switch tabs or
+  windows, or take the address bar, whenever the keys would reach a browser, and the desktop
+  instructions say to open the page under test in a browser window of its own. The macOS spellings — command+w, command+shift+], command+l and the rest —
+  and macOS application names such as "Google Chrome" and "Safari" count too.
+- **A compacting chat whose stream dies is reloaded on the next sweep, not after five minutes.**
+  While an automatic Compact & Resume owned a chat's recovery clock, the page's own "Connection
+  interrupted" was ignored entirely, and the prime sat on that error for nine minutes while its
+  model went on calling tools behind the dead page. The failure now brings the ticket's next
+  pickup forward — the same reload, under the same three-attempt bound.
+- **A brief lost from the composer before Send is offered to a fresh chat, and the chat it was
+  lost from records what you type next.** With the replacement chat open and the brief just
+  landed, an Escape in the same instant emptied the composer. The armed ticket then sat for its
+  six hours, the run could not move on, and the chat — waiting for a marked message that would
+  never come — journalled nothing typed into it afterwards. The page now proves the brief never
+  left it (an empty composer in a chat that still has no id), the app takes the armed dispatch and
+  the claim back and opens a fresh chat for the same brief at once, and the old page journals
+  normally.
+- **A chat whose answer stream died is reloaded, every time.** Three separate rules left the prime
+  chat dead on "Connection interrupted" for twenty minutes while its answer was long finished on
+  the server. The once-per-turn reload budget was charged when the reload landed, against a turn
+  that had already failed, so it stuck to the *next* turn and refused that turn's own error as
+  already spent. The failed turn's end then took the chat off the two-minute silence watch, exactly
+  as a completed answer would, so nothing was left to ask. Now the budget is charged only to a turn
+  actually running when the reload lands, a failed turn restarts the silence watch instead of
+  spending it, and a reload gives the chat a fresh two minutes before it is judged dead — a worker
+  writing a long answer used to be put to sleep, and its prime told to wake it, twenty-seven
+  seconds after its own reload.
+- **A woken worker is awake when its turn starts, and nothing can put it back to sleep on the
+  way.** Waking two sleeping workers at once, the browser typed both messages within a second
+  and both pages reported "turn started", yet both stayed *waking* because only a tool call
+  counted as proof, and those calls' page evidence was late. In the same second the page
+  re-reported the settled answer that had put each worker to sleep, and the app took that as a
+  fresh finish: the worker went back to *sleeping* and its wake command was retired, while the
+  message the browser had just typed ran as a turn the app did not own. A turn that begins after
+  the delivered wake now ends the wake like a call does, and no stop observed from outside — a
+  re-reported answer, a late finish call, a quiet sweep — applies while a worker is waking.
+- **A refused call from a replaced chat says what it is.** After Compact & Resume, ChatGPT can keep
+  running the old chat's stopped turn for a while, and every tool call it makes is refused as
+  superseded and filed under Unattributed activity. Those rows now carry a line explaining that
+  the request id proved exactly which chat it came from and that nothing needs repairing, instead
+  of reading like the attribution chain had broken.
+- **The bootstrap fold names the worker and no longer lurches.** The folded opening message of a
+  worker chat now says "This is worker-3 — …", from the session's durable origin so a reloaded tab
+  still knows, and keeps the first two lines of the text visible while closed so the bubble is the
+  same width open and closed.
+- **A Compact & Resume is one timeline row again, and it says where it stands.** The card keyed
+  its fold on the brief request's own turn id, but the app types that request, so the live
+  recorder writes it without one; the answer turn, the brief, the handoff line and the turn end
+  then fell out of the card as loose rows. The card now takes the turn that opens right after the
+  request. Its three overlapping step pills — which shared a class name with the setup wizard's
+  steps and inherited that layout — are replaced by one sentence: what happened, what is still
+  happening, or what failed and why. Green once the new chat opened, red once a step cannot come.
+  When the app abandons a continuation it records the reason into the session, and the row shows
+  it ("Failed — the handover never landed and was given up on").
+- **A compaction stuck writing its brief is reloaded every five minutes, for a quarter of an hour
+  at most.** The automatic pickup used to wait fifteen minutes before its first reload and
+  fifteen between each of the three, so one glitched page cost forty-five minutes of nothing.
+  While the brief is still being written the checkpoint is now five minutes; once the brief has
+  landed the five-minute clock stops and opening the replacement chat keeps the quarter-hour
+  cadence its command is leased for.
+- **Reopening an old resumed chat no longer silences the tab.** The marked resume message raised
+  the content script's journal gate, and only a committed continuation ever released it. Once the
+  app had forgotten that token — after a restart, or simply later — its `no_such_continuation`
+  refusal left the gate shut for the life of the document, and the gate followed the tab into the
+  New Chat opened next. That chat lost its first user message, its ChatGPT title and its
+  `turn_start`, so the app never saw it working: no automatic compaction, no unattributed-call
+  recovery, no reload repair, until the tab was refreshed by hand. A definitive app answer now
+  releases the gate, and moving to another chat drops the previous chat's gate outright.
+- **A reloaded tab records a turn the app never heard of.** A reload mid-turn used to adopt the
+  app's open turn or nothing: with no durable turn and no send receipt, the reloaded page filed
+  the running question as history, and the chat stayed "idle" for the app while ChatGPT worked
+  on. A document that has opened no generation of its own now claims the newest user message as
+  the running turn once Stop has outlasted the settle window and the app reports no active turn.
+- **A resumed chat is armed the moment Compact & Resume commits.** The new chat used to get its
+  activity grant only after it had proved a turn of its own; when it never got its first tool call
+  through, nothing knew it was mid-turn and nothing reloaded it. Its calls stayed Unattributed and
+  the loop stalled on the first call after every automatic compaction. The commit now grants the
+  replacement chat the same silence and unattributed recovery an ordinary working chat has.
+- **A retired chat's late observations no longer mint a session of their own.** The old chat
+  re-rendering the brief seconds after the commit created a second session consisting of nothing
+  but the summary. Such observations are filed into the session lineage they came from, without any
+  activity, turn or Goal effect.
+- **The Activity log survives the run.** It was in-memory only, so a failed overnight run left
+  nothing to read. It is now mirrored, redacted as before, to `app.log` in the app's data folder
+  (4 MB, one rotation).
+
+### Changed
+- **One Compact & Resume is one timeline row.** The brief request, the brief, the "handoff saved"
+  line and the bootstrap in the new chat fold into a single expandable card whose header shows the
+  three steps as coloured chips — summary requested, summary received or not, new chat opened or
+  not — so a failed handover is recognisable at a glance instead of being three long messages.
+- **Unfolded tool rows stay put while a chat is running.** The timeline used to be rebuilt from
+  scratch on every change, closing whatever the user had expanded and jumping the scroll position.
+  Rows whose record did not change are now kept as the same nodes.
+
+### Security
+- macOS Screen Recording and Accessibility remain independent OS grants. The helper requests no
+  privilege at startup, reports a typed error when a live operation lacks consent, and permission
+  revocation remains effective without changing the connector schema cached by ChatGPT.
+
+</details>
+
+## [2.0.2] — 2026-08-26
+
+2.0.2 is the native cross-platform release port. The already-published 2.0.1 release remains the
+historical Windows hardening release; this patch moves the unreleased tree forward so the new
+Windows/macOS/Linux build matrix can be published under a fresh tag instead of trying to replace it.
+
+### Added
+- **Native release jobs now cover six host/CPU combinations:** Windows x64 + ARM64, macOS Intel +
+  Apple silicon, and Linux x64 + ARM64. Every package job verifies it is running on the requested
+  native host before packaging and smoke-tests the packaged native runtime before upload.
+- **macOS ships DMG and ZIP artifacts for both architectures.** CI verifies each ZIP, verifies and
+  mounts each DMG, and checks the resulting `.app` bundle, executable and `Info.plist` before the
+  release candidate is assembled.
+- **Linux ships AppImage and DEB artifacts for both architectures.** The DEB is installed on the
+  exact Ubuntu 24.04 runner that built it. The AppImage is launched normally under Xvfb with an
+  isolated first-run profile, then launched again with the static launcher's user-namespace probe
+  forced to fail so the documented `--no-sandbox` fallback is covered independently. Both launches
+  must reach app, window and renderer-state readiness; native dependencies are executed separately
+  from the unpacked package before either artifact smoke.
+- **Target-native runtime payload staging now spans all release platforms.** Sharp/libvips,
+  node-pty, tree-sitter, tunnel-client and ripgrep are selected and validated for the target OS/CPU
+  instead of inheriting whatever native payload happened to be installed on the packaging host.
+
+### Changed
+- **Linux packaging is Noble-compatible and keeps stable public filenames.** DEB dependencies allow
+  Ubuntu 24.04's time64 GTK/AT-SPI package names, AppImage uses electron-builder's static 1.0.3
+  runtime rather than depending on legacy FUSE2, and public artifacts remain `x64`/`arm64` even
+  though individual Linux packaging formats use different native architecture aliases internally.
+- **Linux desktop identity is explicit.** `desktopName` and `StartupWMClass` now share the
+  `com.chatonsteroids.app` identity so installed launchers can associate the running Electron window
+  with the generated desktop entry.
+- **The app packaging icon is generated at 1024×1024** for Retina-quality macOS ICNS conversion;
+  the Chrome extension keeps its existing 16/32/48/128 icon set.
+- **Release publication fails cheap.** Tag/version mismatch, missing reviewed notes, public-history
+  privacy failure and an already-existing GitHub release are rejected before the six native package
+  runners are allocated. Candidate artifact names are run-id based so branch names containing `/`
+  cannot invalidate the final upload.
+
+### Known release caveat
+- **The macOS DMG/ZIP artifacts are currently publisher-unsigned (no Apple Developer ID) and
+  unnotarized.** Apple-silicon Mach-O executables can still carry ad-hoc platform signatures; those
+  do not identify a publisher or establish Gatekeeper trust. The native builds and archive/runtime
+  checks are covered by CI, but Apple Developer ID signing/notarization is not configured in the
+  release workflow yet, so Gatekeeper may warn when those artifacts are opened.
+
+## [2.0.1] — 2026-08-25
+
+This is the post-2.0 hardening pass. It is unusually broad because it combines the reusable-worker
+rewrite, a live transcript/Goal investigation, session-store recovery work, the first Computer Use
+overhaul tranche, and an adversarial restart/race audit. The detailed engineering log is in
+`docs/bughunt-2026-08-25.md`.
+
+### Added
+- **Workers are reusable ChatGPT conversations.** A worker that finishes normally now sleeps,
+  preserves its full conversation/history and frees its worker slot. `agents action=message` wakes
+  a sleeping worker in that same chat. If the tab is still open the extension reuses/focuses it;
+  if it was closed the app reopens the exact stored `/c/<conversation>` and types the prime's new
+  instruction as a real user message. Waking requires a free worker slot and fails before queueing
+  or typing when no slot is available. A worker becomes permanently non-revivable only after its
+  recorded context reaches the 400k worker ceiling and it next stops.
+- **Worker revival is crash-safe and durable.** Revival has its own browser command, exact
+  conversation fence, durable lease, receipt replay, app-restart restoration and browser ACK
+  recovery. Browser redemption is now the arbitration cut: once a page owns the durable wake,
+  concurrent MCP liveness cannot steal or duplicate it.
+- **Worker ownership now survives the active run itself.** When the final slot-holding worker
+  sleeps, the global run is parked immediately so another prime chat can start workers, while the
+  original prime retains its complete worker history, exact conversation bindings and revival
+  authority. `agents status` is caller-scoped, fresh workers can be spawned without consuming old
+  sleepers, same-named workers from different primes stay isolated, and Compact & Resume transfers
+  the complete dormant/active history to the resumed child chat. Turning Multi-agent off now parks
+  live execution and withdraws worker browser commands without deleting those histories; disabled
+  restarts preserve them, and only explicit Clear swarm discards the retained ownership.
+- **Specific Goals are durable per-chat state.** Reopening a finished chat restores its goal text
+  without auto-firing stale work; Compact & Resume transfers the same objective to its child,
+  including crash-recovery repair, so an unattended chain of resumptions keeps pursuing one goal.
+  A Goal completion decision stops the current loop without silently deleting the user's saved
+  objective; it remains until explicitly cleared or replaced.
+- **`exec_command` accepts `cmds`** for up to 20 related commands in one shell session, preserving
+  variables/cwd between items and returning labeled per-command exit codes. `max_output_tokens`
+  controls the model-facing output budget, and `write_stdin` keeps the same bounded semantics.
+- **Desktop observations keep immutable recent screenshot frames and UIA snapshots.** Semantic
+  refs point at cached AutomationElement handles scoped to helper generation/snapshot identity,
+  coordinate actions require retained frame identity, and batches expose exact partial-completion
+  and route evidence. Same-call verification can wait for foreground/window/UI conditions and
+  optionally capture the resulting state.
+- **Retained session history is paged in the Chat UI.** The session list now reports the real
+  retained total, loads older pages on scroll and uses cursor deltas for live detail refresh
+  instead of repeatedly resending the same large tail.
+- **Approved roots can be renamed from the Home UI.** The editor survives unrelated renderer
+  pushes, keeps failed drafts for retry and cancels if authoritative state removes or renames the
+  target.
+
+### Changed
+- **Desktop automation's hot path was overhauled without expanding the public two-tool surface.**
+  The helper is prewarmed only when native Desktop capabilities are published, fixed sleeps were
+  removed from common focus/action paths, window/UI/pixel acquisition can use one internal
+  snapshot request, UIA traversal is bounded with TreeWalker + CacheRequest, and read-only window
+  capture tries a background path before any visible-screen fallback.
+- **The tested bundled `tunnel-client` now wins by default.** An explicit configured binary still
+  wins; PATH/common-install copies are fallback only. Tunnel discovery/version checks are cached,
+  and the development bundled path now resolves the repository resource correctly.
+- **Windows command startup is cheaper and more deterministic.** Explicit short yields are honored
+  instead of being clamped to ten seconds, default PowerShell starts without the user profile,
+  shell discovery is memoized, and Java/Go PATH reachability checks are cached against the exact
+  environment while explicit `JAVA_HOME` / `GOROOT` keep priority.
+- **Browser setup now follows actual feature dependency.** The extension is required only when
+  recording or multi-agent is enabled. Durable pairing and live browser presence are separate
+  states, so a stored token alone no longer makes Setup claim the extension is currently connected.
+- **Filesystem-root setup uses the capability set that really needs a root.** Mixed Core/Desktop
+  configurations cannot skip folder approval merely because Desktop is enabled, while genuine
+  screen/control/clipboard-only setups remain allowed without a filesystem root.
+- **The main window adapts to the current Windows work area** instead of forcing a fixed 1080x700
+  non-resizable surface that can exceed small or DPI-scaled displays.
+- **Session retention is continuous rather than startup-only.** It runs immediately, then on a
+  coarse six-hour singleflight interval, honors the current retain-days setting and scans the
+  uncapped attachment catalog instead of an arbitrary first 5,000 directories.
+- **Goal configuration is internally consistent.** Recording-off forces Goal off instead of
+  persisting a combination that cannot ever supply a transcript. A specific goal can still open a
+  New Chat and become its first user message, but an unsent opening goal is never attached to an
+  unrelated existing chat navigated to while the provider request is in flight.
+- **The stock Goal continuation prompt is slightly more persistent.** It now continues while a
+  concrete requested task or question remains unreported/unanswered and stops only when ChatGPT
+  clearly presents the whole requested job as complete. It still treats an explicit all-done claim
+  as authoritative and does not invent extra testing, polish or follow-up. Existing installs whose
+  saved prompt is byte-for-byte the old stock default migrate automatically; edited prompts do not.
+
+### Fixed
+- **Quitting always quits.** Quit could hang forever: the app kept running with its window and
+  tray already gone, still holding the single-instance lock, so every later attempt to start Chat
+  On Steroids silently did nothing and the only way out was Task Manager. Two independent faults
+  produced it. The first was logging: Electron keeps a `BrowserWindow` object after destroying the
+  window, so the renderer push read `webContents` off a corpse and threw — and because log
+  listeners run synchronously on the writer's stack, every teardown log line threw into the
+  teardown step that wrote it. The MCP drain's force-close timer died on its own warning before it
+  could force anything, leaving the app draining a half-closed tunnel socket with no deadline left
+  to save it. The second was the quit itself. Teardown ended by calling `app.quit()` from the
+  promise continuation that finished it, and Electron drops a quit raised from there: measured on
+  Windows, that call returns without even emitting `before-quit`, while the identical call one
+  macrotask later quits normally — so a clean, fully drained teardown still ended in a process that
+  would not leave. Renderer pushes now check for a destroyed window, a failing log listener can no
+  longer break the code that logged, the two force-close paths act before they report, and teardown
+  is both bounded and terminal: each phase has its own budget, and the sequence always ends in
+  `app.exit(0)`, which has no such veto.
+- **Quit no longer pauses for fifteen seconds on the extension's own connection.** The bridge
+  swept for idle connections once when it stopped, which cannot see the request that is in flight
+  at that instant — and the extension polls constantly, so on a real quit there almost always was
+  one. That socket returned to keep-alive idle when its response finished and nothing looked
+  again, so every quit waited out the full 15s force timeout. The drain now keeps sweeping, and
+  retires the socket the moment its request is done.
+- **Terminal sessions no longer outlive the app on Windows.** node-pty's ConPTY backend reports a
+  pid of `0` until its console pipe connects, well after the spawn path recorded it, so every tty
+  session carried pid `0` for life: `list_processes` advertised a pid nobody could act on, and
+  termination skipped `terminateProcessTree` under its own `pid > 0` guard — leaving the shell and
+  its console host alive whenever node-pty had deferred its internal `kill()`. The pid is now read
+  live, and terminating every session at once skips the ones already gone, runs the rest
+  concurrently and no longer abandons the queue behind a single rejection.
+- **Crash recovery no longer trusts stale `meta.json` over newer durable history.** Read-only
+  session listing, handoff lookup and normal reopen paths reconcile event/message high-water state
+  without incorrectly marking historical sessions live.
+- **Request-correlation freshness now behaves like LRU rather than FIFO.** Re-observing a still
+  active request id refreshes its bounded-map order as well as its timestamp, preventing exact
+  ownership from being evicted behind genuinely stale ids.
+- **Expired continuations and worker revivals cannot manufacture a fresh lifetime on restart.**
+  Recovery settles the durable broker/continuation half before pruning transport state and uses a
+  plan -> reconcile -> one durable rewrite -> publish transaction so overlapping traffic cannot
+  persist a half-restored generation. Duplicate same-worker revival rows select the newest valid
+  transport before expiry is applied.
+- **Bridge stop/start no longer leaves stale singleton callbacks active.** Spawn/revive/swarm-end
+  listeners are disposed with the bridge; workers created or woken while the bridge is stopped are
+  replayed only after a fresh start owns the callback again. Retained leased commands also have
+  their original deadline re-armed after restart.
+- **A worker wake cannot be duplicated by browser/MCP overlap.** Existing-tab reuse claims the
+  command before the fallback tab is removed; in-flight MCP calls across the revival ACK cannot
+  consume/re-offer the wake text; wrong-chat and stale-run ACKs fail closed; lost ACKs replay from
+  durable receipts rather than typing a second user message.
+- **Worker finalization retires the right delivery state and preserves final reports.** A settled
+  reusable worker sleeps instead of becoming terminal, stale offered inbox rows do not reinject on
+  the next wake, detached silent workers are maintained periodically even without another MCP
+  ingress, and the run is not released while a final worker report still needs delivery.
+- **App-side browser Disconnect now means disconnect.** The extension cannot silently pair itself
+  again on the next request; only an explicit browser Connect/Retry clears the durable intent latch.
+- **Recovery extension downloads are pinned to the installed app version** instead of following
+  `releases/latest` and potentially manufacturing an app/extension protocol mismatch.
+- **Historical Overwrite no longer fights ChatGPT virtualization while the user scrolls.** Scroll
+  input temporarily freezes presentation rewrites and the first idle repaint anchors/compensates
+  the actual transcript scroller, keeping the visible historical turn stable.
+- **Final assistant turns are recorded and noticed more reliably.** Hidden/background tabs react
+  immediately to the generating -> quiet edge instead of depending on a throttled transcript
+  debounce; Stop removal outside the transcript wakes the recorder; and when healthy Fiber omits
+  `end_turn`, a fresh completed-message action may close the exact terminal sibling only after the
+  quiet window, settled calls and generation ownership all agree. Old Copy buttons, Retry/reused
+  turn ids and earlier siblings cannot certify newer prose.
+- **A transient `interrupted` marker no longer holds a separately proven final response open until
+  the user types again.** The recorded outcome remains interrupted, but exact terminal action
+  evidence can provide the missing boundary. User-pressed Stop remains excluded from Goal.
+- **Only the exact terminal Fiber message is promoted to final.** Commentary or other interim
+  assistant rows remain streaming when a turn ends without terminal evidence, and live assistant
+  chronology uses the local observation clock rather than a skewed ChatGPT `create_time`.
+- **Image/file attachment ids no longer make a real user-text anchor ambiguous.** Overwrite joins
+  only against durable authored user-message ids, preventing attachment objects in the same turn
+  from splitting or misrouting reconstructed activity.
+- **Recorder takeover now removes every ownership channel.** In addition to DOM/window listeners
+  and MutationObservers, the predecessor unregisters `chrome.runtime.onMessage` and
+  `chrome.storage.onChanged`; an `alive=false` recorder cannot answer a health/revival message or
+  repaint after its successor owns the document.
+- **Browser journal loss markers keep exact routing identity.** Queue pressure/rejection gaps retain
+  the source conversation/provisional/agent/command route instead of borrowing another entry's
+  identity, and losses are bucketed per route rather than collapsed across chats/workers.
+- **`view_image` no longer serializes the same base64 twice.** Native MCP image content is the one
+  transported copy, allowing the full bounded image budget without redundant structured output.
+- **Desktop output is bounded where it previously was not.** Clipboard reads are capped per action
+  and in aggregate; `observe what=windows` uses bounded `max_elements`; partial action batches
+  report the exact completed count and failing index.
+- **Ordinary MCP Disconnect cannot force-close an already accepted mutation before its response.**
+  Endpoint stop drains gracefully by default; only final application shutdown opts into the
+  bounded force-close deadline.
+- **Renderer secret/settings races no longer erase newer user input.** API-key fields clear only
+  after successful storage and only if they still contain the submitted snapshot; whitespace-only
+  OpenRouter input cannot remove a stored key; rapid read-only/theme toggles derive from the latest
+  requested settings snapshot rather than stale acknowledged state.
+- **Setup and Chat history no longer pay repeated full metadata scans.** A process-lifetime summary
+  catalog, bounded initial detail tail and sequence cursor deltas keep live refresh proportional to
+  new work while preserving chronological paging across bursts.
+- **Dead/unfinished paths were cleaned up.** The stale `--connect-on-start` self-update handoff was
+  removed because no updater produces it, and seven file-local extension helpers with no normal or
+  reflective caller were deleted.
+- **`exec_command.cmds` no longer trusts command-authored text as batch framing.** Each batch now
+  carries a fresh random framing id, so a command printing text that looks like an exit marker
+  cannot close its section early and corrupt per-command failure classification.
+- **A transient session-root filesystem error cannot poison the process-lifetime session index.**
+  Only a genuinely missing sessions directory is treated as empty; `EBUSY`, `EACCES` and other
+  scan failures fail closed and retry on the next lookup instead of making ownership, retention and
+  latest-handoff discovery blind until restart.
+
+### Validation
+- Release-index gate on 2026-08-25: public-history privacy check and TypeScript typecheck passed,
+  **50 committed Vitest files passed with 1580 passed / 1 skipped**, and `npm run build` produced
+  the main, preload and renderer production bundles successfully. A broader local run that also
+  included intentionally uncommitted standalone regression files passed as well.
+
+### Known compatibility debt
+- `exec_command` / `write_stdin` still represent command output in both the ordinary text content
+  and the required structured Codex-compatible `output` field. Both copies are bounded, but
+  removing either is an end-to-end contract change rather than a safe local optimization.
+
+## [2.0.0] — 2026-08-24
+
+The first release to carry the goal loop, and the release where the compiler stopped treating
+unused code as a matter of taste. 2.0 supersedes 1.9.9, which was tagged in the repository but
+never published.
+
+The version number moves to 2.0 because of what changed underneath rather than what appears on
+screen: three modules that production no longer reached were deleted outright, `exec_command`
+started refusing shell text it previously ran against the wrong filesystem dialect, and two
+process launchers stopped handing connector credentials to their children. An integration built
+against the removed internals, or against the old pass-through behaviour, will notice.
+
+### Added
+- **`noUnusedLocals` and `noUnusedParameters` are on permanently.** They were what surfaced the
+  dead code below, and leaving them optional is what let it accumulate.
+
+### Removed
+- **`patch.ts`, `patch-files.ts` and `process-manager.ts` are gone**, with their suites. Codex's
+  applier and the desktop helper's retirement barrier had already taken over both jobs; what
+  remained was a second implementation nothing called, which is the kind of thing that gets
+  edited during an incident because it looks live.
+- Unused production imports, dead editable-text snapshot and encoding helpers, a dead line-count
+  wrapper, and two dead MCP formatting exports.
+
+### Fixed
+Full write-up, defect by defect, in `docs/bughunt-follow-up-2026-08-24.md`. Credible leads that
+were reviewed but not reproducible enough to fix are tracked privately rather than published, as
+`SECURITY.md` and the documentation rule in `AGENTS.md` require.
+
+- **A patch that moved a file onto itself deleted it.** `apply_patch` writes the destination and
+  then removes the source, so equivalent spellings — `source.txt` and `./source.txt` — wrote the
+  new contents and immediately unlinked them. Move verification now compares resolved identities,
+  case-insensitively on Windows, and refuses the whole patch before anything is mutated.
+- **A workspace-relative glob starting with `*` searched a virtual root instead of the chat's
+  workspace.** With no literal prefix before the first wildcard, the walker substituted `/`, so
+  `*.ts` and `**/*.ts` quietly asked a different question and answered it successfully. An empty
+  prefix now stays relative unless the pattern itself began with `/`.
+- **`read` charged compressed image bytes against its output budget instead of the base64 it
+  actually emitted**, so an image under the `view_image` ceiling could slip past the 512 KiB
+  aggregate cap. It now charges the real payload, and a large image gets an explicit `use
+  view_image` fallback rather than a truncated answer.
+- **A malformed Goal SSE record could be typed into the composer as a finished reply.** Non-JSON
+  `data:` records after valid deltas were ignored, and EOF then promoted the partial sentence to
+  a message. A non-empty malformed record is now a protocol failure: the stream is cancelled and
+  no draft is exposed. Comments, blank lines, role-only events and `[DONE]` are unaffected.
+- **Three bridge routes used the capped UI list as an ownership index.** Manual Compact & Resume,
+  automatic compaction and Goal draft startup all searched `listSessions()`, which is capped for
+  display, so a valid older conversation came back `session_not_recorded`. All three now go
+  through the durable attachment catalog.
+- **Unsolicited state pushes erased Chat settings while they were being edited.** Home controls
+  had a focused-dirty guard and the Chat sheet did not, so a connection or status push could wipe
+  a half-typed compaction threshold, worker count or Goal setting. The Chat controls now apply the
+  same focused-and-different rule.
+- **`shell.openPath` failure was reported as success.** Electron resolves it with an error string
+  rather than rejecting; the handler discarded the string and the renderer said the folder had
+  opened. Any non-empty result is now an IPC error.
+- **Virtual app paths inside shell text ran against the wrong filesystem dialect.** The sandbox
+  had a bounded detector for this and nothing called it — PowerShell reads `/workspace/file` as a
+  drive-root path, not the app's approved virtual root. `exec_command` now refuses approved
+  virtual-root tokens and names the two fallbacks that work. URLs, language fragments and
+  unapproved `/name` tokens are left alone.
+- **A post-start desktop-helper error released the input queue before the helper was retired.**
+  Malformed replies, write failures and timeouts already waited for the process tree to die; the
+  child's `error` event rejected immediately, so a replacement could start while a broken helper
+  still held desktop-input authority. That path now shares the retirement barrier.
+- **Renderer redirects were not vetoed.** Both Electron guards blocked `will-navigate` and
+  neither blocked `will-redirect`.
+- **`swarm:clearAgent` accepted any string** — arbitrary length, control characters — before
+  handing it to the global broker. The IPC boundary now requires 1–64 alphanumeric or hyphen
+  characters.
+- **Fiber skipped readable assistant sections that had no `data-turn-id`.** The selector required
+  the attribute although the state machine handled `turnId: null`; the fixture installed an empty
+  attribute instead of omitting it, so the gap was never exercised. A second logical-id collision
+  could also swallow a distinct message, and now falls back to the raw message id marked
+  unstable — trading reload durability on that one ambiguous row rather than dropping a message.
+- **`execRecoveryHints` blamed causes the command did not contain**, suggesting backslash quoting,
+  glob expansion or `&&`/`||` fixes for commands with none of them, and printed `Command failed  a
+  command` with a doubled space.
+
+### Security
+- **Tunnel children inherited ambient connector credentials.** The OpenAI tunnel client spread raw
+  `process.env` and cloudflared inherited the environment implicitly, so starting Electron from a
+  credential-bearing terminal passed unrelated provider secrets into both. Both launch paths now
+  use the shared `childEnv()` scrubber, and the OpenAI path adds back only its own control-plane
+  key, the local MCP URL and its discovery headers.
+
+## [1.9.9] — 2026-08-24
+
+### Added
+- **The goal loop.** A second model reads each finished ChatGPT answer and writes your next
+  message for you, until it decides the thing you asked for is done — at which point it writes
+  nothing at all. Off by default, and it needs an OpenRouter API key, which is the one
+  credential in this app a *model* can cause to be spent.
+
+  The work is split where the trust boundary is. The page owns the one judgement only a browser
+  can make: that the turn is really over. It is the same four-signal barrier a compaction brief
+  waits on — the stop control gone, the answer no longer growing, the tool rail still, and the
+  app reporting no local call open — held for eight seconds, because a reply that fires early
+  types "what about the tests" into a chat that is still in the middle of writing them, and the
+  model then answers it as if it were a correction. Everything after that is the app's: the
+  context, the key, the request, and one draft per generation.
+
+  What leaves this machine is only the user's messages and ChatGPT's final answers. Not tool
+  calls, not their results, not the interim commentary a turn produces while it works — a
+  recorded session holds file contents and command output, and none of that is anybody's next
+  chat message. The model is asked to write the way you write: lowercase, casual, one message.
+  When the goal is met it answers `NO_REPLY` and nothing is sent.
+
+  The reasoning level is selectable (default/minimal/low/medium/high) and the model is chosen
+  from OpenRouter's own catalogue, newest release first, twenty at a time — fetched when you
+  open the picker rather than when you open the settings.
+
+- **A settings sheet on the ChatGPT composer.** The compaction button is a gear now. Hovering
+  still says what is on in one line — `Auto-compaction on, from 300k tokens` / `Goal on` — and
+  clicking opens a small sheet in ChatGPT's own type, hairline and radius, with a switch each
+  for automatic compaction and the goal loop, and *Compact & resume now* as the sheet's single
+  action. The switches write to the app and paint what the app answers back, never optimistically,
+  because the app's own settings window can change the same two. With no key stored, the goal
+  row reads `OpenRouter API key essential for goal feature`.
+
+- **The panel above the composer says what the loop is doing** — checking the answer is
+  finished, sending it to OpenRouter, the model's reply streaming in as it is written, then
+  either the message about to be sent or `Goal reached · nothing was sent`. A failure shows its
+  code (`out_of_credit`, `auth_rejected`, `rate_limited`, `http_502` …) rather than going quiet.
+
+- **`ultrathink` on the worker bootstrap.** A worker is the one agent here that gets a task with
+  no conversation in front of it and no chance to ask a clarifying question, so the one thing
+  worth spending a token on is asking it to think before it starts.
+
+### Fixed
+Full write-up, with what each defect actually did, in `docs/bug-audit-2026-08-23.md` and
+`docs/bug-audit-2026-08-24.md` — the second pass audited the merged tree for ordering at the
+crash, reload and navigation boundaries, where several of these were correct a second later and
+wrong at the moment a caller decides whether its operation happened.
+
+- **A patch that touched one file twice was refused, though the applier behind it would have
+  taken it.** `apply_patch` runs Codex's verifier as a pre-flight gate in front of Codex's
+  applier, and the two disagree about a patch whose hunks name one path more than once. The
+  verifier keys its preview by path and rejects the repeat outright with `multiple operations
+  target …`; `apply_hunks_to_files` walks the hunks in order and writes each one before it reads
+  the next, so a file updated twice — or rewritten as a delete followed by an add — applies
+  exactly as written. Upstream never has to reconcile them because that verifier was built for an
+  approval UI, where a repeat would silently drop an entry from the list shown to the user.
+  Nothing here shows that list; the gate just refuses. Three of seven hundred and two recorded
+  patch calls died that way: one test file carrying two `*** Update File:` headers where one
+  header with both `@@` chunks was required, and two documents the model meant to replace
+  wholesale.
+- The gate itself earns its place — it is what makes a patch whose last hunk has stale context
+  fail before the earlier hunks have been written, which is the difference between a refusal and
+  a half-patched tree — so it now stops disagreeing with the thing it gates rather than being
+  removed. Verification carries what each earlier hunk would have left at a path, and every later
+  hunk on that path reads from there instead of from disk: the dry-run equivalent of the write the
+  applier does in between. A repeat is refused only where the applier would also have failed, with
+  the reason it would have failed — an update after the patch deleted the file, or a second hunk
+  whose context is stale against the first one's result, both of which are now reported as what
+  they are. This is sequential and not a merge: the second update may edit a line the first one
+  inserted, and may sit earlier in the file than the first, both of which the single forward cursor
+  shared by chunks under one header would refuse.
+- **A diff capped with `Select-Object -First` was reported as a failed command.** The stage stops
+  the pipeline the moment it has its N objects, which kills the program still writing into it and
+  leaves a non-zero status behind — `git diff | Select-Object -First 5` exits 1 where the same
+  `git diff` exits 0, and whether it bites at all depends on how much the program had left to
+  write. One worker capped a four-file diff at 220 lines, got 383 lines of correct diff under
+  `Process exited with code 1`, and ran it again. The exit is now called what it is, but only
+  where nothing else could have caused it: the pipeline has a truncating stage and no stage that
+  could have set the status itself, the generator is a git subcommand that only reports and
+  carries no `--exit-code`, `--quiet` or `--check`, and the run printed something without printing
+  a `fatal:`. Rule out the cut and there is no way left for that command to have exited 1. A test
+  run capped the same way is untouched, which is the case this must never get wrong, and the note
+  hands over `-Wait` as the way to keep the status meaningful.
+- **A search that named one missing path threw away the answer for the others.** ripgrep given
+  three files where one does not exist prints `os error 2` for that one, prints every match from
+  the two that do, and exits non-zero. A prime agent read the status, dropped the matches, and
+  went looking again — for a file it had misspelled by one directory. The output now carries a
+  note saying which path was missing and that the rest is a complete answer for the paths that
+  exist. Distinct from the unexpanded-glob note above it, which is `os error 123`: a path that
+  could not exist, rather than one that merely does not.
+- **A bash-style escaped quote made PowerShell refuse the whole line.** A backslash escapes
+  nothing in PowerShell, so `rg -n "a|state === \"starting" src` ends its argument at the
+  backslash and the shell rejects the line with `TerminatorExpectedAtEndOfString` — running none
+  of it, including the `git diff` two statements earlier on the same line. In one recorded
+  session that was two of a worker's forty-six calls, each returning 49 tokens of parser error
+  that never mentioned the escape character. Such an argument is now re-quoted with single
+  quotes before it runs, but only where the line provably does not parse as PowerShell, does
+  parse under bash's rules, and parses again once repaired. The backslash itself is kept: the
+  two escapes PowerShell does accept both parse and then hand the program the quote stripped and
+  the following argument swallowed into the first, which was verified against the shell — a
+  wrong answer reported as a successful one is the thing this must never do. A body holding
+  `$`, a backtick or a doubled backslash is left for the shell to refuse, with a new hint that
+  names the cause.
+- **A search that found nothing still read as a failure.** The classifier that knows exit 1 from
+  `rg` is a result and not an error was spent only on the session's error count, so the model
+  still saw `Process exited with code 1` under an empty body and re-ran searches that had
+  already answered. It now says so in the result itself, for both shapes that produce it: no
+  matches, and a pipeline stopped early by `Select-Object -First`.
+- **The settings sheet pushed its own controls off the right edge.** `.pane` is a grid, and a
+  grid with no explicit column gets an implicit `auto` track — which is floored by the widest
+  child's min-content width. The settings rows carry `white-space: nowrap` hints, so that floor
+  was the whole sentence: measured at the window's own 1080px the track came out 724px inside a
+  674px content box, and the card clips rather than scrolls sideways. Every row overhung by 50px,
+  which ate the compaction switch, the goal switch, the units and the end of "Select model". The
+  column is `minmax(0, 1fr)` now, so the rows yield the way they were always written to.
+- **"Default" was a 708px dropdown.** The Reasoning select inherited the `width: 100%` written
+  for the stacked fields in `.field`, and in a flex row that made a five-word menu as wide as the
+  sheet with its own label squeezed to nothing. A dropdown in a settings row is now as wide as
+  the word it holds, and the row's button no longer shrinks ahead of the explanation beside it.
+- **Two buttons that opened nothing.** `link:open` is an allowlist, so a URL missing from it does
+  not open the wrong page — it throws in a handler nobody watches and the button is simply dead.
+  "Open OpenRouter keys" had never been added, and "Open Apps" broke when ChatGPT renamed that
+  page from Connectors and the markup followed while the allowlist did not. Both work; a test now
+  holds every `data-link` in the window against the allowlist, which is what caught the second.
+- **The model picker stopped at twenty.** Scrolling the catalogue to the bottom loaded
+  nothing: paging was only ever on the "Load 20 more" button below the list, which is not
+  where anyone looks when a scrollable list runs out. The list pages itself now, a screenful
+  before the end, and the button still works for anyone who prefers it. The repaint was the
+  other half of it — the list is rebuilt whole on every page, and emptying an element scrolls
+  it back to the top, so even once it paged it threw the reader back to the newest model.
+
+- **The goal loop armed itself in worker chats.** The switch is one setting, but it is the
+  prime's. A spawned worker already has an author for its user turns — the prime, through the
+  agents tool — so a second model typing into it as well made the worker answer a question its
+  prime never asked and finish against that instead, with every worker in the run spending
+  OpenRouter credit in parallel on drafts about to be overridden. The loop is now on for the
+  prime and for an ordinary chat that is no part of a run, and off for every worker.
+
+- **The default model was a snapshot from April, and the newest ones could not be saved.**
+  OpenRouter publishes twelve ids beginning with `~` — family aliases that always resolve to
+  the newest model in a family — and the picker lists them because the catalogue does. The
+  validator behind *Save* did not allow the character, so the one kind of entry most worth
+  choosing was the one kind that reported an error and left the model where it was. The
+  shipped default was `deepseek/deepseek-v4-flash`, which reads like "the flash model" but is
+  published as V4 Flash 0423; two newer revisions existed by August that the default could
+  never have reached. It is now `~deepseek/deepseek-v4-flash-latest`, which cannot rot the
+  same way and is the cheaper of the two at $0.04/M prompt against $0.057/M.
+
+- **One ChatGPT answer could be drawn twice, one copy per section.** Overwrite reconstructs a
+  response from the user message that caused it, so every assistant section between that
+  message and the next one resolves to the same reconstruction. Sections that carry a turn id
+  are folded into one logical turn first; sections ChatGPT renders *without* one — which some
+  builds do permanently — were not, and each of them painted the whole answer into itself,
+  stacked down the page with ChatGPT's own copy hidden underneath each. The first section to
+  claim a reconstruction now owns it, and the rest of the response stays behind it.
+
+- **The settings popup and the hover bubble had no fade at all.** Both asked for a
+  `clf-pop-in` animation by name and nothing ever defined it. A CSS `animation` naming
+  keyframes that do not exist is not an error — it is simply nothing — so the two surfaces
+  snapped into place at full opacity beside a page whose own popovers fade. Nothing in a
+  browser will ever report this, so a test now asks the stylesheet instead: everything it
+  animates, it defines.
+
+- **The goal loop went quiet instead of saying it had given up.** Two of the watch's dead ends
+  — an answer with no text in it to continue from, and a turn that never stopped changing
+  inside the five-minute ceiling — simply removed the panel, which from the outside is
+  indistinguishable from a loop that never ran. Both now say what happened. The failing paths
+  also keep the step they failed in rather than collapsing into one `failed`, so a run that
+  stopped is drawn where it stopped.
+
+- **A second chat inherited the first one's goal state.** None of the loop's state was cleared
+  on navigation, so opening another chat drew the previous one's phase and error above its
+  composer — "The goal loop stopped", about a conversation no longer on screen — and carried a
+  finished turn's id across as the id the new chat must not draft twice.
+
+- **A retired swarm's worker command could be adopted by the next run.** Worker bootstraps were
+  identified by `worker:<agent>`, and `worker-1` is what every run calls its first worker — so a
+  durable command left over from run A matched run B exactly, and run B inherited A's task, A's
+  command id and A's lease. Commands now carry the broker's run id, dedupe on it, retire when
+  their run stops being current, and refuse to be queued outside a run at all. Worker rows from
+  the older journal versions are dropped on restore rather than migrated: nothing on disk says
+  which run owned them, and the restored broker re-requests anything it is genuinely owed.
+- **Lost-ACK worker recovery trusted a label the page chose.** Binding a conversation to
+  `worker-1` on the page's own say-so is authority handed to anything that can say `worker-1`.
+  The page must now also present the exact command id it redeemed, honoured only against a
+  still-leased command of the current run.
+- **`session` told a model its history did not exist.** When this app could not place a call in
+  a conversation — a request id that never resolved inside the evidence window — `action=history`
+  answered *No recorded session is available*, which is false and a dead end: the model concludes
+  there is no history and rebuilds the work from the filesystem, which is what happened on
+  2026-08-23 against a recording hundreds of events long. It now says what actually happened and
+  lists the recordings, so the next call can name one. `action=status` does the same, and a
+  history search that matches nothing names the other recordings too — a search that finds
+  nothing here is often aimed at the wrong session, since a compacted chat's work lives under the
+  id it inherited.
+- **`exec_command` could hand a recycled process id to its previous owner.** Process ids are
+  small and reusable and ownership lives in a separate registry, so an evicted process could
+  leave its owner row behind and let the old chat write to or interrupt the new chat's process
+  during the new call's first yield. The row is cleared at the allocation boundary now.
+- **A desktop click could land on a screen nobody had looked at.** `frameId` was "strongly
+  recommended"; without it, coordinates were applied to whatever the latest global frame happened
+  to be — and another chat or agent can replace that frame between the screenshot a caller saw
+  and the click it sends. Coordinate actions now require it (`FRAME_REQUIRED`). Semantic refs
+  resolve the real control at action time and are unaffected.
+- **One unknown reasoning level would have wiped every root and permission.** A rejected enum
+  fails the whole settings parse, which collapses the file to conservative recovery. The set of
+  levels is a provider's vocabulary, so a config written by a newer build is a case this app will
+  meet; it falls back now, exactly as a blank model id is repaired rather than refused.
+- **The goal loop would never stop waiting for a composer somebody was using.** Its two-minute
+  patience was measured from a timestamp that every retry reset, so it could not expire and the
+  draft would have retried for as long as a half-written message sat in the box.
+
+- **A worker's message could reach disk before its sender was told it had been accepted.** The
+  broker stages a message and hides it from the recipient until the immediate write succeeds, but
+  `changed()` also kicks the ordinary debounced snapshot, and that snapshot still contained the
+  staged entry. Its 300ms writer could therefore land while the acceptance write was still held or
+  about to fail, so a crash in that window restored a message whose sender had been told nothing —
+  or had been told it failed. The broker has two structurally separate views now: the public
+  debounced snapshot excludes unpublished messages, and only the private one behind the immediate
+  write includes them. A failed write rolls the staging back and emits a committed-only revision,
+  so the writer's own generation ordering supersedes the rejected work rather than resurrecting it
+  on a later retry.
+- **A worker's bootstrap command could be retired before the binding it created was durable.** The
+  page redeemed its command, bound its conversation in memory, and ACKed — and a crash between the
+  receipt and the swarm fsync left neither a command to replay nor a binding to recover from.
+  Persistence comes first now: the ACK may replace a leased worker command with its receipt only
+  after the critical snapshot succeeds, and if that write fails the ACK is retryable and the
+  command stays redeemable.
+- **A worker's final report could be acknowledged before the state carrying it was durable.**
+  `/events` recorded a worker's last message, finished the conversation, queued the exact
+  worker→prime report and answered 200 — while the terminal broker state behind it was still on
+  the debounced writer. The extension retired its observation on that 200, and a crash restored
+  the worker as active with the exact result gone, leaving the orphan path to manufacture generic
+  completion text in its place. The barrier is crossed before the browser is acknowledged; a
+  failure is a retryable 503, which keeps the observation available for replay.
+- **A reused worker id could inherit the previous run's project folder.** Worker workspaces are
+  keyed by a stable short name like `agent:worker-1`, and `inheritWorkspace()` did nothing at all
+  when the new prime had not learned a workspace yet — so the old value under that reused key
+  survived into the next run, and a relative path resolved against the previous run's project.
+  Inheritance has replacement semantics now: reusing an id clears that worker's old workspace
+  first, and the prime's is copied only when there is one.
+- **A restored worker could be opened twice, or reopened after it had finished.** Two crash
+  windows survived in the journal: a worker bound to a conversation but still recorded `invited`,
+  which restore treated as owing a fresh chat, and a once-detached worker persisted as `finished`
+  while it still carried `revivable`, which let terminal work reopen. Restore repairs the first,
+  a finished worker is never revivable, and binding and activation are one persistence transition
+  rather than two.
+- **A run could be released while a message was still committing.** Staged worker messages are
+  deliberately invisible to the ordinary pending counts until their durability barrier succeeds,
+  and `releaseQuiescentRun()` consulted exactly that visible count. In a parallel finish and report
+  ACK the visible work could reach zero and destroy the run while a staged `agents action=message`
+  was still waiting to commit — and its sender would then be handed success for a message attached
+  to a broker that no longer existed. Unpublished messages count as outstanding work for release
+  while staying hidden from delivery.
+- **An upgrade could restore the weak run fence it had just replaced.** Run identity moved from
+  short random hex to a UUID without a snapshot version bump, and restore trusted any `runId` it
+  found — so the obsolete 32-bit incarnation id came back and was used to fence fresh durable
+  worker commands. A restored run id must satisfy the current UUID-v4 shape; a legacy snapshot is
+  re-keyed to a fresh one with its agents, queues and unfinished bootstrap obligations intact.
+- **Handoff recovery stopped looking after 5,000 sessions.** `latestHandoff()` promises to search
+  every recording, but it reused a directory scanner whose 5,000-entry cap exists for bounded
+  maintenance work. Past that count the newest handoff could sit outside the scan, and recovery
+  answered with an older one or with nothing. Recovery has its own uncapped summary scan; the cap
+  stays where it belongs, on pruning.
+- **One state file that failed to write took every later one down with it.** `flushDurable()`
+  rejected on the first named file that failed, so at shutdown a broken `swarm.json` write could
+  stop an unrelated continuation, correlation or bridge snapshot queued behind it from being
+  attempted at all. A shutdown pass now attempts every pending file, preserves failed generations
+  for the retry machinery, and surfaces the first real error after the independent writes have run.
+- **A restart could answer a completed command's retry with "gone".** The bridge snapshot is
+  version 3 and carries the command receipts that resolve a lost HTTP acknowledgement, but restart
+  recovery accepted receipts only from version 2. A command whose operation and receipt were both
+  durable therefore answered an exact post-restart retry as though it had never happened, instead
+  of replaying its committed result. Recovery accepts the current shape as well as the compatible
+  older one.
+- **Compaction work could follow the tab into a different chat.** Settle and watch work waits on
+  tools and browser state, and the browser can navigate A → B, or A → B → A, while it waits. The
+  conversation id alone cannot see the second case — the id is the same again while the document
+  is not — so stale work could continue against the new document and submit a handoff into the
+  wrong navigation. Compaction is fenced by conversation id *and* navigation epoch; navigation
+  clears stale capture state, and a cancellation retires its capture before crossing any later
+  wait rather than leaving something able to complete after it was abandoned.
+- **A rejected handoff was already published as the latest one.** `createHandoff()` wrote the
+  handoff file and appended the session `handoff` event before the continuation WAL moved from
+  `awaiting-summary` to `awaiting-chat`. When that WAL write failed the continuation correctly
+  stayed retryable — but `meta.lastHandoffId` had already exposed the rejected brief to every
+  unrelated recovery caller, and the retry could then write a second one. Capture is a two-store
+  transaction with explicit ordering now: prepare the file, durably publish the continuation state
+  carrying its id, then publish the session event. The opposite crash window — WAL committed,
+  session event missing — is repaired idempotently at restart.
+- **Goal could send a draft after the switch was off.** The page checked the setting before
+  starting a draft, but an OpenRouter request already in flight could come back ready after the
+  user switched the feature off, and the send path typed it in anyway. The send boundary rechecks
+  the current setting before touching the composer, and the app acknowledging an in-progress draft
+  now aborts its request so a cancelled draft stops spending the key.
+- **A lost acknowledgement could send the same message twice.** ChatGPT accepting a message is
+  irreversible; `/goal/ack` is a fallible local hop. If the send landed and the ACK did not, the
+  app correctly re-offered its unacknowledged draft after a reload — and the browser had no record
+  that it had already spent that token. The content script writes the conversation and draft token
+  into a small bounded `sessionStorage` receipt the moment ChatGPT accepts the send, before it
+  tries to ACK, so a reoffered token retries only its acknowledgement. The other half was the
+  ten-minute expiry, which deleted the whole draft and with it the key that made this safe: expiry
+  retires the visible payload but keeps the turn and token as an acknowledged tombstone until a
+  genuinely newer generation supersedes it.
+- **Goal could pay for a decision that did not include the answer it was reacting to.** The
+  content script accepting an observation means it is durable in the extension's journal, not that
+  the app has it. With `/events` mid-retry, a finished answer could trigger a draft and the
+  background worker would call `/goal/draft` straight away, against a session still missing that
+  answer. Goal joins any in-flight drain and gives its conversation priority until the worker can
+  prove there are no accepted-but-undelivered rows for it; if delivery cannot be established it
+  returns a retryable `transcript_not_delivered` and never calls the route.
+- **A cancellation could retire the wrong generation.** `/goal/ack` also took `cancel:true`, and
+  that branch ignored the draft token it was given and cancelled whichever draft happened to
+  occupy the conversation — so a delayed cancel from one generation could retire the next. No
+  current content code used it. The unkeyed branch is deleted; retirement has one protocol, the
+  conversation plus the exact token, which already aborts in-flight provider work and keeps the
+  tombstone.
+- **A provider could hand this app an unbounded body.** Goal read error responses with
+  `response.text()` and the model catalogue with `response.json()`, buffering whatever arrived
+  before reducing it to a short status or a picker list. Both go through a streaming byte-bounded
+  reader now, enforcing the declared length *and* the actual bytes — 64KiB for a diagnostic
+  failure, 8MiB for the catalogue. The cache holds at most 5,000 models, an id over 500 characters
+  is refused rather than truncated into a different identity, and display names are capped.
+- **The model catalogue outlived the key it was fetched with.** The cache was not scoped to the
+  credential, so replacing a restricted key kept the previous key's catalogue for the rest of the
+  TTL. It is keyed by a one-way fingerprint of the credential now.
+- **A stream that ended without a trailing newline lost its last record.** SSE parsing could drop
+  the final record, or split a UTF-8 tail, when the connection closed on a boundary it did not
+  expect. EOF flushes the decoder and the last buffered record.
+- **A long answer's own revisions could crowd the conversation out of Goal's context.** Canonical
+  recordings replace stable messages in place, but older ones can hold many append-only snapshots
+  of a single ChatGPT message id, and `readRecentEvents()` counted every revision against its row
+  cap — so enough revisions of one long assistant answer filled the whole recent window before it
+  ever reached the user turn that answer belonged to. Newest-first scanning counts a stable legacy
+  identity once and keeps walking back until it has the number of logical rows it was asked for,
+  and Goal collapses same-kind, same-id legacy rows defensively, keeping first chronology with
+  newest content and leaving id-less rows distinct.
+- **Connect and Connecting could describe resources that were not running.** Four lifecycle
+  defects, one surface: after a disconnect a connector card could keep the dead tunnel's `live`
+  state and public URL; a terminal report such as `tunnel-unavailable` left the card reading
+  "Connecting" forever; changing the active Core transport while connected could leave the old Core
+  running while settings and Desktop had already moved to the new one; and the pre-connect folder
+  gate disagreed with surface availability, refusing a clipboard-only Desktop setup that needs no
+  filesystem root at all. Presentation is rebuilt from the endpoint actually running, terminal
+  reports map to a surface error, a Core-affecting change performs a serialized reconnect while a
+  Desktop-only tunnel change stays hot-swappable, and the gate uses the same usefulness predicate
+  as publication. Connect, disconnect and applySettings are serialized and tunnel callbacks are
+  fenced by a connection generation, so a late report from a stopped tunnel cannot repaint the
+  connection that replaced it — and the button's own label and action read the same running states
+  as the lifecycle owner, so a fast double click cannot become two tunnel stacks.
+- **Desktop discovery could freeze Core's tool shape before Core had been asked.** The two share a
+  loopback listener but are separate discovery units, and one global exposure snapshot let a
+  Desktop discovery fix Core's mutually exclusive `find`-versus-exec choice on Core's behalf.
+  Exposed capabilities, features and that choice are monotonic per surface now, which is the
+  boundary ChatGPT actually caches.
+- **A chunked request had no size limit before it was parsed.** The Content-Length guard did not
+  cover chunked or length-less POSTs, so the adapter could concatenate an arbitrarily large body
+  and then hand it to the JSON parser. Those requests go through an explicit 8MiB bounded
+  collector; bytes past the limit are drained without being retained and answered 413, and
+  malformed bounded JSON is answered 400.
+- **A history search could report a match and then not show it.** The selector built a small
+  neighbourhood around every hit by walking forward from two events before it, and stopped as soon
+  as the presentation cap was full — so with `limit: 1` a real hit at event 7 could be answered as
+  "1 match" while the response contained event 5 and not event 7 at all. Direct matches reserve
+  the budget first; what is left is filled with nearest context in rings and sorted back into
+  chronological order.
+- **`session` declared itself a writer, and capped recovery below what it can store.** It exposes
+  `history` and `status`, both inspection, but advertised `readOnlyHint: false`, so a client could
+  reasonably apply write or confirmation semantics to reading this app's own recording. The second
+  was arithmetic: a recorded call can legitimately spill around 16MiB across argument and result
+  overflow, while the schema stopped `history(call_id)` at part 200 — a valid part 200 could
+  instruct the model to ask for 201 and the schema would refuse it. It is marked read-only, and
+  the maximum part is derived from the real overflow ceilings rather than a constant that had
+  drifted away from them.
+- **A migrated root could collide with the reserved namespace.** Legacy and migrated roots could
+  land on a reserved virtual name — `/skills` notably — or on another root once names were
+  normalized, leaving an ambiguous virtual path. Migration and live rename preserve unique safe
+  names, and a live rename into the reserved namespace is refused.
+- **`exec_command` rebuilt only PATH.** It started from the raw parent environment with PATH
+  replaced, rather than from the sanitized child environment every other spawn here uses, so
+  connector and API secrets were not stripped from it. It starts from the shared sanitized
+  environment now, which also keeps the bundled ripgrep path and the system paths intact.
+- **A read that touched nothing counted as a read that worked.** Multi-read telemetry counted
+  targets it never attempted once the output cap was exhausted, and an explicit read whose every
+  target failed came back as a successful response full of `ERROR` sections. Only paths actually
+  attempted successfully are counted, and the all-failed case is an error.
+- **Relative paths could resolve against another chat's root.** Identity-sensitive relative and
+  default-workspace operations fell back to another root or chat when the exact calling
+  conversation could not be proven. In an active swarm they fail closed instead.
+- **A dying page could reopen its navigation lease while its replacement was loading.** Direct
+  navigation marks the old document terminal before the new one registers, and the old page can
+  still emit a delayed message on the way out. The recovery heuristic read any mismatch with the
+  registered document as proof that the terminal prediction had been wrong — even while Chrome was
+  reporting a `pendingUrl` for a new ChatGPT document — which let the dying A document reopen its
+  lease in the middle of A → B. A terminal prediction is overturned only once Chrome proves the
+  original document is settled again; a genuinely speculative one still recovers when the tab is
+  stable.
+
+### Changed
+- **The compaction window defaults to 400k estimated tokens**, up from 300k, with the red line
+  following it to 533k. 300k was set as the point with comfortable room left to compact, and in
+  use it turned out to be early: chats sat amber and compacted themselves while nothing was
+  wrong with them, and every one of those cost a fresh conversation. 400k is the figure the
+  ceiling has actually been observed near, and the trigger has been edge-based since 1.8, so the
+  turn that crosses the line still finishes and still writes its handoff.
+
+  It reaches existing installs, not just fresh ones. `auto: true` at 300k is what 1.8 wrote for
+  itself, so a config still carrying exactly that moves; the meter's own 300k/400k pair moves
+  with it. Any threshold somebody typed stays exactly where they put it, and nothing moves back
+  down — a config already at 400k keeps it, however it came to be there.
+
+- **The panel above the composer has a progress bar with named stages.** *Answer settling ·
+  Reading the chat · Writing the reply · Sending*, one segment each, filled up to where the
+  run is and with the segment being worked on the only one that moves. A caption on its own
+  answers "what now" and never "how far", which is exactly the distinction between a run that
+  is slow and a run that has stopped — and where a stopped run stopped is now visible rather
+  than inferred from which sentence it froze on. Built to ChatGPT's own measurements: a 3px
+  track, the accent already used by the switches, labels at low contrast until they are the
+  one running. Reduced motion fills the active segment instead of animating it.
+
+- **The goal loop's messages are typed, not written.** Two things give a composed message away,
+  and neither survives being asked nicely in a system prompt. The em dash is the first: it is
+  not on a keyboard, and one of them in a lowercase two-line follow-up is the whole tell on its
+  own. Every one is now replaced by what somebody typing that sentence would have reached for
+  instead — a comma, usually; nothing at all when it opened a bullet; a hyphen between two
+  digits, because that was a range. The second is that the message is *clean*, and real ones in
+  a conversation like this are not, so one or two slips go in: a dropped apostrophe, a collapsed
+  double letter, a transposed pair in the middle of a word. Never more than three in a message,
+  spread so two never land in the same breath, and never inside backticks, a path, a URL or a
+  file name, where a typo is a different instruction rather than a slip.
+
+  None of it is random. One finished turn is one message, and that only holds if a retried
+  request, a second observer and a reloaded tab are all handed back the identical string — so
+  the choices are seeded from the draft itself and never from a clock. The `NO_REPLY` check
+  still runs against what the model actually said, before any of this touches it.
+
+- **The two legacy-heavy suites no longer carry 35 skipped tests.** Thirty of them asserted
+  mechanisms that no longer own truth — DOM-row progress ownership, retired commentary
+  reconstruction, old local generation heuristics, recorder behaviour that moved into the
+  canonical session and Fiber layers — and were deleted rather than cosmetically re-enabled,
+  because a skipped test for a dead architecture preserves neither coverage nor a specification.
+  The five that still described live invariants were rewritten against the current Fiber and
+  navigation-epoch model: a STOP before a new assistant section must not attach the new generation
+  to the old one, commentary-only activity may bind the right section while Fiber supplies
+  identity, extension-owned rendering must never feed back into canonical recording, an
+  unexplained Stop-control dropout must not manufacture an `unknown` turn end, and work arriving
+  after Stop reappears stays on the same local generation. The continuation suite was also built
+  on synchronous helpers whose mutations were merely debounced, so it could stay green without
+  ever exercising the WAL path production uses; it constructs and claims through the durable APIs
+  now, and the dead synchronous exports are gone.
+
+## [1.9.8] — 2026-08-23
+
+1.9.7 was tagged and its installers were built and checksummed, but it was never published:
+review found four more ways the same two mechanisms could still be wrong. The tag and its
+artifacts stay where they are as the record of that commit, and this is the release.
+
+### Fixed
+- **Glob and brace expansion actually reach ripgrep again.** Binding a bare `rg` to the bundled
+  binary and expanding its globs are two rewrites of the same command, and they were run in the
+  order that cancels one out: binding replaced the leading `rg` with `& 'C:\…\rg.exe'`, and the
+  normalizer, which recognises ripgrep by that leading token, then saw a command it had no
+  opinion about. Every ordinary `rg pattern *.ts` went out unexpanded — the exact failure the
+  normalizer exists to prevent — while both halves looked correct in isolation, which is how
+  the unit tests missed it: each function was only ever called on its own. Expansion now runs
+  first and binding composes on top of it, and the regression exercises the pair together.
+- **`JAVA_HOME` is never pointed at a runtime that cannot compile.** Discovery accepted any
+  directory holding `bin\java.exe`, and a JRE has one. `C:\Program Files\Java` with `jdk-21`
+  beside a leftover `jre1.8.0_411` is what an ordinary Oracle install leaves behind, and name
+  ranking falls back to text once two names stop sharing a digit run — so the JRE won, JAVA_HOME
+  named it, and its `bin` went to the front of PATH. That is not a worse JDK, it is a broken
+  Gradle build on a machine that had a working one. The probe is now for the compiler, so the
+  answer is a JDK by construction, and a machine whose only Java is a JRE gets nothing rather
+  than a confident wrong answer.
+- **A failed command is quoted back in a form that can be run again.** The command echoed in
+  `exec_command failed for …` escapes an apostrophe the way shlex does. It had been written as
+  a double-quoted JavaScript `"'\''"`, which is three apostrophes rather than the intended
+  quote-escape-quote, and three leaves the quoting unbalanced: `'it'''s'`. Glob expansion quotes
+  every name it substitutes, so apostrophes in that string are routine rather than exotic.
+- **The PowerShell native-search normalizer now fails closed whenever its parser cannot prove
+  the command shape.** Backtick escapes are no longer split as if their escaped `;`, `|`, newline
+  or whitespace were real syntax; bracket classes such as `a[12]*.ts` are not "expanded" with
+  the brackets treated literally; and a leading dot follows shell glob rules instead of letting
+  `*.ts` silently include `.hidden.ts`. Ripgrep option arity is no longer guessed from a hand
+  table either: the known option set comes from the bundled binary's own help, and an unknown
+  option leaves the command untouched rather than risking a pattern/path swap such as
+  `rg --engine pcre2 foo.* src`.
+- **The exit-1 "no search matches" exemption no longer guesses through shell syntax or profile
+  shadowing.** A PowerShell backtick makes the lightweight status parser decline the exemption;
+  downstream pipeline stages are skipped only for a very small set of exact passive shapes,
+  rather than merely because their names are known cmdlets; and a profile-enabled shell no
+  longer treats bare `rg` / `rg.exe` as proof that ripgrep ran. PowerShell can define a function
+  under either name — `-NoProfile` included, since a function defined in the command text
+  shadows the executable regardless — so a path-qualified executable is the only thing the
+  command text can prove, and the only thing that earns the benign-exit classification. The
+  ordinary case is preserved rather than surrendered: a bare `rg` is first rewritten to the
+  bundled binary by absolute path, which is the same build the option table is read from and
+  was already first on the child PATH.
+- **A conditional chain no longer donates ripgrep's exit code to whatever actually failed.**
+  `&&` and `||` were read as ordinary separators and the last statement taken as the command
+  that set the exit code. On PowerShell 7, where those operators work, `cmd /c exit 1 && rg foo`
+  never reaches ripgrep at all — and the exit 1 it really came from was filed as a search that
+  found nothing. Which branch ran is decided at run time and nothing in the text says which,
+  so a command line holding a top-level chain now names no program and keeps no exemption.
+- **A wrapper script named after a search program is no longer treated as one.** The program
+  name had `.cmd`, `.bat` and `.ps1` stripped along with `.exe`, so `rg.cmd`, `rg.bat` and
+  `.\rg.ps1` all answered to ripgrep's contract that exit 1 means "no matches". They are local
+  scripts free to exit 1 for their own reasons. Only the program itself — spelled `rg` or
+  `rg.exe` — is still a candidate for the exemption, and it still has to be path-qualified
+  to actually earn it.
+- **A brace group that still needs a glob stage is left alone instead of half-expanded.** bash
+  expands braces and *then* expands the wildcards in what came out. Only the first half happens
+  here, and what it produces is quoted so it reaches the program verbatim — so `{*.ts,*.js}`
+  became two quoted wildcards ripgrep cannot open, a worse failure than the untouched group.
+  Any alternative still holding `*`, `?` or a `[…]` class is now refused outright.
+- **One chat's tool call no longer holds another chat's compaction open.** The barrier that
+  waits for local work to settle before a handoff is written read a count of every call running
+  in the process. A swarm runs every chat through that one process, so a worker's long build
+  kept the prime's finished brief waiting until the watch expired and aborted the compaction —
+  blocked by work it has nothing to do with and cannot see. The count is per conversation now.
+  A call whose chat is not yet proven still counts against every chat, which is the same
+  conservative answer as before and the only safe one while its owner is unknown.
+- **Compact & Resume now fails closed on an unsettled or unobservable local machine, without
+  waiting on recorder bookkeeping that cannot mutate it.** If the chat's local request count is
+  still non-zero at the settle deadline, or the app cannot provide a valid count after bounded
+  retries, no handoff is submitted. A finished unattributed call may still spend the recorder's
+  correlation grace window waiting to be filed; `/activity` now exposes that separately as
+  `settlingTools` while `pendingTools` means requests still inside dispatch. This removes an
+  accidental ~15-second cross-chat compaction tax without turning "could not verify zero" into
+  success.
+- **Explicit shell requests execute the shell that was actually named or fail before running
+  anything.** An unknown/missing explicit shell no longer falls back to `cmd.exe`, and an
+  explicit `powershell` is never silently upgraded to `pwsh` (or vice versa). Path-like shell
+  values mean that exact file, including relative paths resolved against the command's own
+  `workdir`, so shell-language changes cannot hide behind fallback behavior.
+- **`read` now reports zero successful explicit targets as a failed call and records the count
+  it really read.** Partial multi-read remains useful, but two missing requested files are not a
+  healthy read merely because their `ERROR` sections were returned. Targets skipped after the
+  aggregate output cap are no longer counted as successful telemetry either.
+- **Unified `exec_command` uses the same child-environment contract as the other process paths.**
+  Connector/control-plane secrets are scrubbed before the model-run child inherits its
+  environment, the bundled ripgrep directory and irreducible Windows PATH entries are present,
+  and the existing dev-toolchain discovery extends that repaired environment instead of
+  rebuilding a subtly different one.
+
+## [1.9.7] — 2026-08-23
+
+1.9.6 was tagged but never published: its CI run failed and the release job failed with it, so
+nothing in that section has reached anyone yet. It ships here, together with the fixes below.
+
+### Fixed
+- **A real failure could be recorded as a search that found nothing.** 1.9.6 exempted exit 1 from
+  `rg`, `grep` and `findstr`, and decided which program set it by walking the pipeline from the
+  right and skipping anything that looked like a PowerShell cmdlet. "Looked like" was any bare
+  `verb-noun` token, and external executables are hyphenated too — so in `rg foo | docker-compose
+  up`, the real failing stage was skipped, ripgrep was named as the status-determining program,
+  and a build failure was stored as a result. Name shape cannot prove what a token is, so the
+  inference is gone: an exact list of known cmdlets and aliases is treated as non-native and
+  everything else is assumed to be a program. Not knowing a real cmdlet now costs an exemption,
+  which is the safe direction to be wrong in.
+- **A command the shell refused to run could be recorded as a search that found nothing.** The
+  same exemption looked only at whether the output began with `rg:` or `grep:`. Windows
+  PowerShell 5.1 answers `Write-Output hi && rg foo` with a parser error and exit 1 — nothing ran
+  at all — and that was stored as a successful empty search. Shell and parser failures, missing
+  commands and binding errors can no longer take the benign-exit path, whatever program the line
+  would have ended in.
+
+### Added
+- **`{a,b}` brace groups are expanded the way bash would have expanded them.** PowerShell has no
+  brace expansion, so `rg TODO src/{main,shared}` reached ripgrep with the braces intact and
+  failed on a path that does not exist. The expansion is textual and needs no directory listing,
+  so unlike glob expansion it applies to every statement of a command line rather than only the
+  first. It is deliberately narrow: quoted tokens, flags, nested braces and anything holding a
+  `|` or `;` are left exactly as written, and a script block `{ ... }` is never mistaken for one.
+- **PowerShell 5.1 says what to write instead of `&&` and `||`.** These are not translated. `A;
+  B` is not what `A && B` means — it runs B even when A failed, which can be a destructive
+  follow-up that should have been gated — so the shell's own refusal is answered with the
+  guarded forms instead: `A; if ($?) { B }` for `A && B`, and `A; if (-not $?) { B }` for
+  `A || B`. The hint fires only on the parser error itself, so it stays silent on a shell where
+  the operators work.
+- **Two habits that fail without explaining themselves are stated up front.** The server
+  instructions now say that `2>&1` on a native program leaves `$?` false even when the program
+  exited 0, and give both chain-operator rewrites. Neither can be normalised away — stripping the
+  redirect changes what the command returns — so they are said once rather than repaired after
+  the fact.
+
+### Internal
+- Pending-call accounting now spans the whole MCP request rather than only the handler body.
+  Calls waiting for late durable attribution remain observable in a dedicated recorder-settling
+  count after their result is released, while the compaction machine barrier consumes only the
+  still-dispatching count. This preserves the evidence needed to debug attribution gaps without
+  coupling a browser handoff deadline to `REQUEST_ID_GRACE_MS`.
+- The MCP shutdown test synchronises inside the PowerShell process it already started, instead of
+  spawning a second `node` to write the file it waits for. 1.9.6 reintroduced that cold spawn and
+  raised the wait to 15 seconds; on a hosted Windows runner the spawn outran the whole budget and
+  failed the release. The early diagnostic that reports what the server actually answered is back
+  with it, so a request that finishes before the command starts says so instead of timing out.
+- The real-console test drives `cmd.exe` instead of a cold `powershell.exe`. The subject is
+  ConPTY, not any one shell, and on a hosted runner PowerShell took longer to produce its first
+  byte than the whole wait allowed — while the console tests either side of it passed in about a
+  second. `mode con` asks the console for its own size, which a pipe cannot answer at all, so the
+  proof is unchanged and the cold start is gone. `mode con` translates its labels, so the
+  assertions read the number the console reported rather than the English word in front of it.
+- The three window-state tests find a window before asking for its state, the way the window
+  tests beside them already do. A hosted runner can have no visible desktop window at all, and
+  `WINDOW_NOT_FOUND` is the correct production answer to that — asserting the runner has a
+  desktop was the test's mistake, not the helper's.
+
+## [1.9.6] — 2026-08-23
+
+### Fixed
+- **A compaction turn is no longer declared finished while it is still working.** The end of a
+  turn was decided by one signal — the stop control staying gone for four seconds — and a long
+  agentic turn makes that control flicker between phases. On 2026-08-23 that closed a compaction
+  turn 28 characters into its brief, stored `TASK\nContinue implementing ` as the whole handoff
+  for a session holding 455 events and 318,422 tokens, and opened the replacement chat with it
+  while the original went on making tool calls for another seven minutes. The brief is now held
+  until four things agree and keep agreeing: the stop control is gone, the answer has stopped
+  growing, the turn's tool rail has stopped moving, and the app reports no local call still
+  running. An app that cannot be asked counts as busy rather than as idle.
+- **A brief too short to have carried the session is refused instead of stored.** Nothing
+  downstream can tell a truncated handoff from a complete one, so the check happens before it is
+  written. A refused compaction leaves the session exactly where it was and says why.
+- **A resume no longer races the recorder for its own replacement chat.** The recorder invents a
+  session for any conversation it has not seen; the commit moves the existing session onto that
+  same chat. The recorder won by 302 ms, the commit found its destination already owned and
+  refused to rebind, and the session stayed behind while the swarm's prime role moved on without
+  it. New chats now wait, briefly and boundedly, while a replacement chat is expected — including
+  after a restart that recovered a continuation still holding its claim.
+- **`rg pattern *_test.go` works on PowerShell without silently widening.** PowerShell does not
+  expand globs for native programs, so the pattern reached ripgrep literally and the call failed.
+  The glob is now expanded against the working directory the way the shell would have, rather
+  than rewritten to `-g`, which is a recursive filter that would also have matched
+  `sub/nested_test.go`. Only the first statement of a command line is touched, because anything
+  after it may have changed the directory or the files in it.
+- **A search that found nothing is no longer recorded as a failed tool call.** `rg`, `grep` and
+  `findstr` spend exit 1 on "no matches" and reserve other codes for real errors. The exemption
+  applies only when the program that set `$LASTEXITCODE` — the rightmost native stage of the
+  pipeline, not its generator — is one of those, and only when it printed no error of its own.
+- **`read` accepts several paths and a line range in one call**, and says outright when a file
+  has no lines in that range, so a short file can never read as a complete one.
+- **A child process inherits the environment it was given**, and `JAVA_HOME` / `GOROOT` are
+  filled in from an installed toolchain when — and only when — the tool would otherwise be
+  unreachable. Versioned install directories are now compared as version numbers, so `jdk-21`
+  outranks `jdk-9`.
+- **git run outside a repository says so**, and names how to find the root, instead of returning
+  a bare failure.
+
+## [1.9.5] — 2026-08-23
+
+### Added
+- **The extension requirement is explicit where sub-agents are configured.** Setup now says
+  worker chats require the companion extension to be loaded and connected, Chat settings repeats
+  that requirement, and Setup includes a direct download link for the standalone extension ZIP.
+
+### Fixed
+- **Sub-agents can be enabled without restarting Chat On Steroids.** Swarm persistence hooks are
+  now wired for the lifetime of the main process instead of only when multi-agent was enabled at
+  startup, so the first `spawn` after enabling the feature can cross its durable acceptance
+  barrier normally.
+
+## [1.9.4] — 2026-08-22
+
+### Added
+- **Native Windows x64 and ARM64 release packaging.** Release candidates build and smoke-test
+  each architecture on a matching Windows runner, bundle the matching tunnel/search assets and
+  Chrome extension, and assemble explicit installers plus an extension zip and SHA-256 manifest.
+
+### Changed
+- **Fresh installs start fully enabled.** All file, command and desktop permissions begin on,
+  read-only mode begins off, and multi-agent starts enabled with the existing two-worker
+  default. Existing configs keep their explicit choices, and a corrupt config still recovers
+  conservatively rather than treating damage as permission consent.
+- **The Home activity log starts shorter**, leaving more vertical room for permissions,
+  folders and health without changing the activity view itself.
+- **Public setup and security guidance was refreshed for release.** The landing page now calls
+  out the separate x64/ARM64 installers, bundled-extension install path, unsigned SmartScreen
+  warning, current ChatGPT MCP access limits, and the experimental browser-automation terms risk.
+
+### Fixed
+- **Compact & Resume and browser-command recovery are durable across failures and restarts.**
+  Continuation transitions now persist before publication, queued/leased browser commands and
+  final receipts survive restart, and a committed resume cannot be cancelled by a late timeout
+  or lost HTTP response.
+- **Multi-agent finish and recovery paths are deterministic.** Terminal worker retries can
+  recover their final result without reviving the worker, critical broker state has an awaited
+  durability barrier, and resume transfers repair only from durable recovery evidence.
+- **The extension no longer drops recoverable work on transient/protocol failures.** 426 keeps
+  the observation journal for retry, command acknowledgements use a storage-backed outbox, and
+  retry alarms are kept stable until durable work drains.
+- **Browser/Fiber attribution is stricter under navigation and reused UI state.** Scan identity,
+  request ownership and chronology stay fail-closed when ChatGPT reuses rows, ids or documents.
+- **Session/catalog races no longer resurrect stale ownership.** Conversation attachment lookup,
+  first-sight initialization and asset accounting now preserve the durable session as authority.
+
+### Performance
+- Reduced repeated filesystem scans and metadata calls in `read`, glob expansion and fallback
+  search; reused already-read bytes for binary/encoding detection and reduced ripgrep buffer
+  copying.
+- Removed repeated browser journal/chronology scans and batched request-correlation persistence;
+  streaming session messages now compare their fixed stored-text shape without repeatedly
+  serializing large prose.
+
+## [1.9.3] — 2026-08-21
+
+### Changed
+- **The app is now called Chat On Steroids.** The installer, the window, the connector
+  names and the extension all use the new name. Two consequences on upgrade: the new
+  build installs alongside the old one rather than over it, and settings live in a new
+  folder (`%APPDATA%\chat-on-steroids\`), so the stored API key and recorded sessions
+  do not carry across. **Reload the extension** — the bridge handshake changed with the
+  name, and an old extension is refused with a visible error rather than failing quietly.
+- **`spawn` takes a shared `context`.** The repository, the conventions file, what not to
+  touch, how to validate, what to report — written once for the batch, and put in front
+  of every worker's own task. Each `task` now carries only that worker's objective.
+- **`message` sends a batch.** `action='message'` accepts a `messages` array as well as a
+  single `to`/`text`: three redirected workers are one tool call instead of three, and
+  the batch is delivered in full or not at all.
+- **Every `agents` reply carries machine-readable state** beside its sentence of prose —
+  the run, the caller, each agent and anything queued — so the model reads state rather
+  than parsing English.
+- **Workers are asked for a structured handoff**: RESULT, CHANGES, VALIDATION, BLOCKERS.
+- **The preamble typed into a worker's chat is three lines shorter**, saying only who it
+  is and how to report.
+- **A closed tab no longer ends a worker.** A ChatGPT turn runs on OpenAI's servers, so
+  closing the tab loses this app's view of the worker rather than stopping it. Such a
+  worker shows as *no tab*, keeps its slot, and rejoins the moment it calls again; it is
+  given up on only once it has also gone quiet.
+
+### Removed
+- **`agents(action='join')` and its recovery key, entirely.** It was the last credential
+  in the app and the only field a model could present as identity. A worker is the chat
+  the app opened for it; a binding that goes missing is restored by the extension
+  reporting the chat, not by pasting a key. The desktop window's recovery-key button is
+  gone with it.
+
+## [1.9.2] — 2026-08-21
+
+Pre-public beta milestone.
+
+### Fixed
+- Harvest the request id before ChatGPT's safety check releases it. The id used to
+  correlate a tool call with the turn that caused it could be gone by the time it
+  was read, which surfaced as calls landing under the wrong turn or under
+  *Unattributed activity*.
+
+## [1.9.1] — 2026-08-21
+
+### Fixed
+- Attribute MCP calls that arrive without a `data-turn-id`. ChatGPT does not always
+  stamp the attribute; those calls previously fell through to *Unattributed*.
+
+## [1.9.0] — 2026-08-21
+
+### Fixed
+- Live transcript ownership and chronology. Turn identity could leak from an older
+  generation into a newer one, progress ids could be reused across generations, and
+  the same semantic tool row could be recorded two or three times under
+  index-derived ids. Identity is now scoped per generation rather than trusting a
+  DOM attribute that survives React node reuse.
+
+## [1.8.9] — 2026-08-21
+
+### Changed
+- Hardening pass across MCP lifecycle, path handling and process control.
+- The test suite terminates reliably instead of leaving stray workers behind.
+
+## [1.8.4] — 2026-08-20
+
+### Added
+- Refreshed application icon.
+- Current Codex-derived base tools ported to Core.
+
+### Fixed
+- Turn-killer bug; session identity now survives a reload.
+- Live transcript capture and attribution repair.
+
+## [1.7.6] — 2026-08-18
+
+### Changed
+- Reduced model-facing tool surface from 45 tools / ~60 kB to 12.5 kB across six
+  core tools and 7.9 kB across two desktop tools, with those sizes held as test
+  budgets. See [`docs/tool-surface.md`](docs/tool-surface.md).
+
+## [1.5.1] — 2026-08-15
+
+### Changed
+- Hardened MCP workflows and process control.
+- Corrected the documented Electron user-data path.
+
+## [1.5.0] — 2026-08-15
+
+### Added
+- Transactional batch edits and process output cursors.
+
+[1.9.5]: https://github.com/totec448-spec/chat-on-steroids/releases/tag/v1.9.5
+[1.9.4]: https://github.com/totec448-spec/chat-on-steroids/releases/tag/v1.9.4

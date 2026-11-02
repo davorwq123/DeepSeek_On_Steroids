@@ -1,0 +1,671 @@
+import { JSDOM } from 'jsdom';
+import { afterEach, expect, it, vi } from 'vitest';
+import { createAgentPanel, workerSlotLimit } from '../src/renderer/agent-panel.js';
+import type { SessionSummary } from '../src/shared/session.js';
+import { workerBrief } from '../src/shared/worker-brief.js';
+
+let dom: JSDOM;
+afterEach(() => dom?.window.close());
+
+it('highlights only round workers in the existing overview and loads history on selection', async () => {
+  dom = new JSDOM('<main></main>');
+  Object.assign(globalThis, { document: dom.window.document });
+  const load = vi.fn().mockResolvedValue({ events: [] });
+  const panel = createAgentPanel({ host: document.querySelector('main')!, load, render: () => [], openMain: vi.fn(), working: () => false });
+  const workers = ['one', 'two', 'three'].map(id => ({ id, title: id, updatedAt: 1 } as SessionSummary));
+  panel.update('prime', workers);
+  panel.showWorkers(['one', 'one', 'three', 'foreign']);
+  const highlighted = () => [...document.querySelectorAll<HTMLElement>('.is-round-worker')].map(row => row.dataset.workerSession);
+  expect(highlighted()).toEqual(['one', 'three']);
+  expect(document.activeElement).toBe(document.querySelector('.is-round-worker'));
+  expect(load).not.toHaveBeenCalled();
+  panel.update('prime', [workers[1]!, workers[2]!]);
+  expect(highlighted()).toEqual(['three']);
+  (document.querySelector('.is-round-worker') as HTMLButtonElement).click();
+  await Promise.resolve(); await Promise.resolve();
+  expect(load).toHaveBeenCalledWith('three');
+  (document.querySelector('.agent-back') as HTMLButtonElement).click();
+  expect(highlighted()).toEqual(['three']);
+  panel.update('other-prime', workers); panel.update('prime', workers); panel.show();
+  expect(highlighted()).toEqual([]);
+});
+
+it.each(['hide', 'empty', 'parent'] as const)('retires pending worker history across %s and return to the same worker', async boundary => {
+  dom = new JSDOM('<main></main>');
+  Object.assign(globalThis, { document: dom.window.document });
+  let resolve!: (value: { events: [] }) => void;
+  const load = vi.fn(() => new Promise<{ events: [] }>(done => { resolve = done; })), render = vi.fn(() => []);
+  const panel = createAgentPanel({ host: document.querySelector('main')!, load, render, openMain: vi.fn(), working: () => false });
+  const worker = { id: 'worker', title: 'Worker', updatedAt: 1 } as SessionSummary;
+  panel.update('prime', [worker]);
+  const pending = panel.open('worker');
+  if (boundary === 'hide') panel.hide();
+  else panel.update(boundary === 'empty' ? 'prime' : 'another-prime', []);
+  panel.update('prime', [worker]); panel.show();
+  resolve({ events: [] }); await pending;
+  expect(render).not.toHaveBeenCalled();
+  expect(document.querySelectorAll('.agent-panel-row')).toHaveLength(1);
+});
+
+it('does not re-open the dock on worker refresh or allow retired full-chat navigation', async () => {
+  dom = new JSDOM('<main></main>');
+  Object.assign(globalThis, { document: dom.window.document });
+  const worker = { id: 'worker', title: 'Worker', updatedAt: 1 } as SessionSummary;
+  const onShow = vi.fn(), openMain = vi.fn();
+  const panel = createAgentPanel({ host: document.querySelector('main')!, load: async () => ({ events: [] }),
+    render: () => [], working: () => false, openMain, onShow });
+  panel.update('prime', [worker]); await panel.open(worker.id);
+  onShow.mockClear();
+  panel.update('prime', [{ ...worker, updatedAt: 2 }]);
+  await Promise.resolve(); await Promise.resolve();
+  expect(onShow).not.toHaveBeenCalled();
+  const oldFullChat = [...document.querySelectorAll('button')].find(button => button.textContent === 'Open full chat')!;
+  panel.update('another-prime', []); panel.update('prime', [worker]);
+  oldFullChat.click();
+  expect(openMain).not.toHaveBeenCalled();
+});
+it('keeps Prime selection independent and rejects late results after parent navigation', async () => {
+  dom = new JSDOM('<main></main><button></button>');
+  Object.assign(globalThis, { document: dom.window.document });
+  const host = document.querySelector('main')!;
+  const toggle = document.querySelector('button')!;
+  let resolve!: (value: { events: [] }) => void;
+  const load = vi.fn(() => new Promise<{ events: [] }>(done => { resolve = done; }));
+  const render = vi.fn(() => [document.createElement('article')]);
+  const openMain = vi.fn();
+  const panel = createAgentPanel({ host, toggle, load, render, openMain, working: () => false });
+  const worker = { id: 'worker-session', title: 'Worker', updatedAt: 1 } as SessionSummary;
+  panel.update('prime-session', [worker]); toggle.click();
+  expect(host.textContent).toContain('History · 1');
+  expect(host.textContent).not.toContain('0 failed');
+  // A worker with no conversation or model yet still gets its row (undefined === undefined once threw here).
+  expect(host.querySelectorAll('.agent-panel-row')).toHaveLength(1);
+  const opening = panel.open(worker.id);
+  expect(openMain).not.toHaveBeenCalled();
+  panel.update('another-prime', []);
+  resolve({ events: [] }); await opening;
+  expect(render).not.toHaveBeenCalled();
+  expect(host.querySelector('aside')!.hidden).toBe(true);
+  await panel.open(worker.id);
+  expect(load).toHaveBeenCalledTimes(1);
+});
+
+it('translates the optional failed suffix in the History heading', async () => {
+  dom = new JSDOM('<main></main><button></button>', { url: 'https://local.test/' });
+  Object.assign(globalThis, { window: dom.window, document: dom.window.document, Node: dom.window.Node });
+  const host = document.querySelector('main')!, toggle = document.querySelector('button')!;
+  const { setLanguage } = await import('../src/renderer/i18n.js');
+  await setLanguage('de');
+  const panel = createAgentPanel({
+    host,
+    toggle,
+    load: async () => ({ events: [] }),
+    render: () => [],
+    openMain: vi.fn(),
+    working: () => true,
+    agent: () => ({ state: 'failed', task: 'Placeholder failure', conversationId: 'placeholder-failed' })
+  });
+  panel.update('prime', [{
+    id: 'worker',
+    title: 'worker-1',
+    conversationId: 'placeholder-failed',
+    startedAt: 1,
+    updatedAt: 2,
+    origin: { kind: 'worker', fromSessionId: 'prime', agentId: 'worker-1', task: 'Placeholder failure' }
+  } as SessionSummary]);
+  toggle.click();
+  expect(host.textContent).toContain('Verlauf · 1 · 1 fehlgeschlagen');
+  await setLanguage('en');
+});
+
+it('renders a selected worker and offers an explicit full-chat navigation', async () => {
+  dom = new JSDOM('<main></main><button></button>');
+  Object.assign(globalThis, { document: dom.window.document });
+  const host = document.querySelector('main')!, toggle = document.querySelector('button')!;
+  const openMain = vi.fn();
+  const panel = createAgentPanel({ host, toggle, load: async () => ({ events: [] }),
+    render: () => { const p = document.createElement('p'); p.textContent = 'Recorded response'; return [p]; }, openMain, working: () => true });
+  panel.update('prime', [{ id: 'worker', title: 'Worker', updatedAt: 1 } as SessionSummary]);
+  await panel.open('worker');
+  expect(host.textContent).toContain('Recorded response');
+  expect(openMain).not.toHaveBeenCalled();
+  [...host.querySelectorAll('button')].find(button => button.textContent === 'Open full chat')!.click();
+  expect(openMain).toHaveBeenCalledWith('worker');
+  expect(host.querySelector('aside')!.hidden).toBe(true);
+});
+
+it('shows the exact accepted completion report separately from activity and conversation', async () => {
+  dom = new JSDOM('<main></main>'); Object.assign(globalThis, { document: dom.window.document });
+  const report = 'RESULT\nAll five commands exited 0.\nCHANGES\nNo files changed.\nVALIDATION\n<img src=x onerror="bad()">';
+  const load = vi.fn(async () => ({ events: [] }));
+  const panel = createAgentPanel({ host: document.querySelector('main')!, load, render: () => [], openMain: vi.fn(), working: () => false,
+    agent: () => ({ id: 'worker-1', state: 'sleeping', task: 'Run commands', conversationId: 'chat-worker', result: report }) });
+  const worker = { id: 'worker-session', title: 'Commands', conversationId: 'chat-worker', startedAt: 1, updatedAt: 2,
+    origin: { kind: 'worker', fromSessionId: 'prime', agentId: 'worker-1', task: 'Run commands' } } as SessionSummary;
+  panel.update('prime', [worker]); panel.show();
+  expect(document.querySelector('.agent-panel-header')!.textContent).toContain('Sub-agents');
+  expect(document.querySelector('.agent-panel')!.id).toBe('subagentPanel');
+  expect(document.querySelector('.agent-card-state')!.textContent).toBe('Finished');
+  expect(document.querySelector('.agent-card-meta')!.textContent).toContain('Report received');
+  expect(document.querySelector('.agent-panel-summary')).toBeNull();
+  await panel.open(worker.id);
+  const tab = document.querySelector<HTMLButtonElement>('[data-view="report"]')!;
+  expect(tab).not.toBeNull(); tab.click();
+  expect(tab.getAttribute('aria-selected')).toBe('true');
+  expect(document.querySelector('.agent-panel-report')!.textContent).toBe(report);
+  expect(document.querySelector('.agent-panel-report img')).toBeNull();
+  expect(load).toHaveBeenCalledTimes(1);
+  expect(document.querySelector('.agent-panel-body')!.textContent).not.toContain('delivered to prime');
+});
+
+it.each(['missing', 'wrong-worker', 'wrong-chat', 'waking', 'active'])(
+  'never promotes %s report provenance to a completed worker', async condition => {
+    dom = new JSDOM('<main></main>'); Object.assign(globalThis, { document: dom.window.document });
+    const panel = createAgentPanel({ host: document.querySelector('main')!, load: async () => ({ events: [] }), render: () => [],
+      openMain: vi.fn(), working: () => false, agent: () => ({ id: condition === 'wrong-worker' ? 'worker-2' : 'worker-1',
+        state: condition === 'waking' || condition === 'active' ? condition : 'sleeping', task: 'Run commands',
+        conversationId: condition === 'wrong-chat' ? 'other-chat' : 'chat-worker', result: condition === 'missing' ? null : 'Old report' }) });
+    const worker = { id: 'worker-session', title: 'Commands', conversationId: 'chat-worker', startedAt: 1, updatedAt: 2,
+      origin: { kind: 'worker', fromSessionId: 'prime', agentId: 'worker-1', task: 'Run commands' } } as SessionSummary;
+    panel.update('prime', [worker]); panel.show();
+    expect(document.querySelector('.agent-card-meta')!.textContent).not.toContain('Report received');
+    expect(document.querySelector('.agent-card-state')!.textContent).not.toBe('Finished');
+    await panel.open(worker.id); document.querySelector<HTMLButtonElement>('[data-view="report"]')!.click();
+    expect(document.querySelector('.agent-panel-body')!.textContent).toContain('No completion report yet');
+    expect(document.querySelector('.agent-panel-report')).toBeNull();
+  }
+);
+
+it('retires a shown report when its exact worker wakes even before summary metadata changes', async () => {
+  dom = new JSDOM('<main></main>'); Object.assign(globalThis, { document: dom.window.document });
+  let owner: { id: string; state: 'sleeping' | 'waking'; task: string; conversationId: string; result: string | null } =
+    { id: 'worker-1', state: 'sleeping', task: 'First job', conversationId: 'chat-worker', result: 'First job finished' };
+  const panel = createAgentPanel({ host: document.querySelector('main')!, load: async () => ({ events: [] }), render: () => [],
+    openMain: vi.fn(), working: () => false, agent: () => owner });
+  const worker = { id: 'worker-session', title: 'Commands', conversationId: 'chat-worker', startedAt: 1, updatedAt: 2,
+    origin: { kind: 'worker', fromSessionId: 'prime', agentId: 'worker-1', task: 'First job' } } as SessionSummary;
+  panel.update('prime', [worker]); await panel.open(worker.id);
+  document.querySelector<HTMLButtonElement>('[data-view="report"]')!.click();
+  expect(document.querySelector('.agent-panel-report')!.textContent).toBe('First job finished');
+  owner = { ...owner, state: 'waking', task: 'Second job', result: null };
+  panel.update('prime', [worker]);
+  expect(document.querySelector('.agent-panel-report')).toBeNull();
+  expect(document.querySelector('.agent-panel-body')!.textContent).toContain('No completion report yet');
+});
+
+it('keeps a report selected when a pending activity read finishes later and supports keyboard tab navigation', async () => {
+  dom = new JSDOM('<main></main>'); Object.assign(globalThis, { document: dom.window.document });
+  let release!: (events: []) => void;
+  const loadActivity = vi.fn(() => new Promise<[]>(resolve => { release = resolve; }));
+  const load = vi.fn(async () => ({ events: [] }));
+  const panel = createAgentPanel({ host: document.querySelector('main')!, load, loadActivity, render: () => [], openMain: vi.fn(), working: () => false,
+    agent: () => ({ id: 'worker-1', state: 'sleeping', task: 'Test', conversationId: 'chat-worker', result: 'Accepted report' }) });
+  const worker = { id: 'worker-session', title: 'Tests', conversationId: 'chat-worker', startedAt: 1, updatedAt: 2,
+    origin: { kind: 'worker', fromSessionId: 'prime', agentId: 'worker-1', task: 'Test' } } as SessionSummary;
+  panel.update('prime', [worker]);
+  const pending = panel.open(worker.id);
+  const tabs = [...document.querySelectorAll<HTMLButtonElement>('[role="tab"]')];
+  tabs[0]!.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'End', bubbles: true }));
+  expect(document.activeElement).toBe(tabs[2]);
+  expect(document.querySelector('.agent-panel-report')!.textContent).toBe('Accepted report');
+  release([]); await pending;
+  expect(document.querySelector('.agent-panel-report')!.textContent).toBe('Accepted report');
+  expect(document.querySelector('.agent-activity-empty')).toBeNull();
+  expect(load).not.toHaveBeenCalled();
+  tabs[2]!.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }));
+  await Promise.resolve(); await Promise.resolve();
+  expect(document.activeElement).toBe(tabs[1]);
+  expect(load).toHaveBeenCalledOnce();
+});
+
+it('rejects an old conversation read across A to B to A even when the summary timestamp is unchanged', async () => {
+  dom = new JSDOM('<main></main>'); Object.assign(globalThis, { document: dom.window.document });
+  let release!: (detail: { events: [] }) => void;
+  const load = vi.fn().mockImplementationOnce(() => new Promise(resolve => { release = resolve; })).mockResolvedValue({ events: [] });
+  const render = vi.fn(() => [Object.assign(document.createElement('p'), { textContent: 'Current conversation' })]);
+  const panel = createAgentPanel({ host: document.querySelector('main')!, load, render, openMain: vi.fn(), working: () => false });
+  const worker = { id: 'worker-session', title: 'Tests', conversationId: 'chat-a', startedAt: 1, updatedAt: 2 } as SessionSummary;
+  panel.update('prime', [worker]); const pending = panel.open(worker.id);
+  panel.update('prime', [{ ...worker, conversationId: 'chat-b' }]); panel.update('prime', [worker]);
+  await Promise.resolve(); await Promise.resolve();
+  expect(load).toHaveBeenCalledTimes(3); expect(render).toHaveBeenCalledOnce();
+  release({ events: [] }); await pending;
+  expect(render).toHaveBeenCalledOnce();
+  expect(document.querySelector('.agent-panel-body')!.textContent).toContain('Current conversation');
+});
+
+it('keeps the back button title and accessible label synchronized with language changes', async () => {
+  dom = new JSDOM('<main></main><button></button>', { url: 'https://local.test/' });
+  Object.assign(globalThis, { window: dom.window, document: dom.window.document, Node: dom.window.Node });
+  const host = document.querySelector('main')!, toggle = document.querySelector('button')!;
+  createAgentPanel({ host, toggle, load: async () => ({ events: [] }), render: () => [], openMain: vi.fn(), working: () => false });
+  const back = host.querySelector<HTMLButtonElement>('.agent-panel-header button')!;
+  const { setLanguage } = await import('../src/renderer/i18n.js');
+  await setLanguage('tr');
+  expect(back.title).toBe('Yardımcı ajanlara dön');
+  expect(back.getAttribute('aria-label')).toBe('Yardımcı ajanlara dön');
+  await setLanguage('fr');
+  expect(back.title).toBe('Retour aux sous-agents');
+  expect(back.getAttribute('aria-label')).toBe('Retour aux sous-agents');
+  await setLanguage('en');
+});
+
+it('preserves a readers scroll position during refresh and Escape returns focus', async () => {
+  dom = new JSDOM('<main></main><button></button>', { pretendToBeVisual: true });
+  Object.assign(globalThis, { document: dom.window.document });
+  const host = document.querySelector('main')!, toggle = document.querySelector('button')!;
+  let resolve!: (value: { events: [] }) => void;
+  const load = vi.fn().mockResolvedValueOnce({ events: [] }).mockImplementationOnce(() => new Promise(done => { resolve = done; }));
+  const panel = createAgentPanel({ host, toggle, load, render: () => [document.createElement('article')], openMain: vi.fn(), working: () => false });
+  const worker = { id: 'worker', title: 'Worker', updatedAt: 1 } as SessionSummary;
+  panel.update('prime', [worker]); await panel.open(worker.id);
+  const body = host.querySelector<HTMLElement>('.agent-panel-body')!;
+  Object.defineProperties(body, { scrollHeight: { value: 1000 }, clientHeight: { value: 100 } });
+  body.scrollTop = 250;
+  const article = body.querySelector('article');
+  panel.update('prime', [{ ...worker, updatedAt: 2 }]);
+  expect(body.querySelector('article')).toBe(article);
+  resolve({ events: [] }); await Promise.resolve(); await Promise.resolve();
+  expect(body.scrollTop).toBe(250);
+  body.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  expect(host.querySelector('aside')!.hidden).toBe(true);
+  expect(document.activeElement).toBe(toggle);
+});
+
+it('shows the worker task and only a model observed for its current conversation', () => {
+  dom = new JSDOM('<main></main><button></button>');
+  Object.assign(globalThis, { document: dom.window.document });
+  const host = document.querySelector('main')!, toggle = document.querySelector('button')!;
+  const panel = createAgentPanel({ host, toggle, load: async () => ({ events: [] }), render: () => [], openMain: vi.fn(), working: () => true });
+  panel.update('prime', [{ id: 'worker', title: 'worker-4 · Shared context…', conversationId: 'chat-b',
+    startedAt: Date.now() - 90_000, updatedAt: Date.now(), origin: { kind: 'worker', fromSessionId: 'prime', agentId: 'worker-4', task: 'Audit and verify the build' },
+    selectedModel: { conversationId: 'chat-b', model: 'gpt-5.6-sol', reasoningEffort: 'high', observedAt: Date.now() } } as SessionSummary]);
+  toggle.click();
+  const card = host.querySelector<HTMLElement>('.agent-panel-row')!;
+  // No name from the prime: "Worker 4", and its id one hover away.
+  expect(card.querySelector('.agent-card-name')!.textContent).toBe('Worker 4');
+  expect(card.title).toBe('worker-4 · Audit and verify the build');
+  expect(card.querySelector('.agent-card-task')!.textContent).toBe('Audit and verify the build');
+  expect(card.querySelector('.agent-card-model')!.textContent).toContain('gpt-5.6-sol');
+  expect(card.dataset.state).toBe('working');
+});
+
+it('names the model as the composer does, says only what matters, and glows the round once', () => {
+  dom = new JSDOM('<main></main><button></button>');
+  Object.assign(globalThis, { document: dom.window.document });
+  const host = document.querySelector('main')!, toggle = document.querySelector('button')!;
+  const now = Date.now();
+  const modelLabel = vi.fn((model: string, effort: string | undefined) => `${model === 'gpt-6-sol' ? 'GPT-6 Sol' : model} · ${effort === 'none' ? 'Instant' : effort}`);
+  const panel = createAgentPanel({ host, toggle, load: async () => ({ events: [] }), render: () => [], openMain: vi.fn(),
+    working: worker => worker.id === 'busy', modelLabel,
+    // The prime named the first; the second carries its id as its label, as a reused worker does.
+    agent: worker => worker.id === 'busy' ? { state: 'active', label: 'Tests', task: workerBrief('Repo: cos. Run the checks.', 'Run the tests'), conversationId: 'chat-busy' }
+      : { state: 'sleeping', label: 'worker-2', task: workerBrief('Repo: cos. Run the checks.', 'Review the layout'), conversationId: 'chat-done' } });
+  const worker = (id: string, agentId: string, extra: Partial<SessionSummary>) => ({ id, title: agentId, conversationId: `chat-${id === 'busy' ? 'busy' : 'done'}`,
+    startedAt: now - 120_000, updatedAt: now, toolCalls: 16, lastToolCallAt: now, lastToolActivity: { kind: 'run', title: 'Ran npm test' },
+    origin: { kind: 'worker', fromSessionId: 'prime', agentId, task: 'Original' }, ...extra }) as SessionSummary;
+  panel.update('prime', [
+    worker('busy', 'worker-1', { selectedModel: { conversationId: 'chat-busy', model: 'gpt-6-sol', reasoningEffort: 'none', observedAt: now } }),
+    worker('done', 'worker-2', { endedAt: now })
+  ]);
+  panel.showWorkers(['busy', 'done']);
+  const card = (id: string) => host.querySelector<HTMLElement>(`[data-worker-session="${id}"]`)!;
+  // Named for its job when the prime named it, else "Worker 2"; each with its own task, the run's
+  // shared context left out.
+  expect([card('busy'), card('done')].map(row => row.querySelector('.agent-card-name')!.textContent)).toEqual(['Tests', 'Worker 2']);
+  expect([card('busy'), card('done')].map(row => row.querySelector('.agent-card-task')!.textContent)).toEqual(['Run the tests', 'Review the layout']);
+  // A thinking-free model is Instant, by its catalog name; never "none".
+  expect(card('busy').querySelector('.agent-card-model')!.textContent).toBe('GPT-6 Sol · Instant');
+  expect(modelLabel).toHaveBeenCalledWith('gpt-6-sol', 'none');
+  // Working: its current action and state; a finished worker shows neither its last action nor its health.
+  expect(card('busy').querySelector('.agent-card-activity')!.textContent).toBe('Ran npm test');
+  expect(card('busy').querySelector('.agent-card-state')!.textContent).toBe('Working');
+  expect(card('done').querySelector('.agent-card-activity')).toBeNull();
+  expect(card('done').querySelector('.agent-card-state')!.textContent).toBe('Idle');
+  expect(host.querySelector('.agent-card-health')).toBeNull();
+  expect(card('done').querySelector('.agent-card-meta')!.textContent).toBe('Idle·16 actions');
+  expect(card('busy').querySelector('.agent-card-time')!.textContent).toBe('2m');
+  // The round's workers glow as the panel opens on them, and not again on the repaints after.
+  expect(host.querySelectorAll('.is-arriving')).toHaveLength(2);
+  panel.update('prime', [
+    worker('busy', 'worker-1', { updatedAt: now + 1 }),
+    worker('done', 'worker-2', { endedAt: now })
+  ]);
+  expect(host.querySelectorAll('.is-arriving')).toHaveLength(0);
+  expect(host.querySelectorAll('.is-round-worker')).toHaveLength(2);
+});
+
+it('lets the round glow go once it has played, so no later layout change can replay it', () => {
+  vi.useFakeTimers();
+  try {
+    dom = new JSDOM('<main></main><button></button>');
+    Object.assign(globalThis, { document: dom.window.document });
+    const host = document.querySelector('main')!, toggle = document.querySelector('button')!;
+    const panel = createAgentPanel({ host, toggle, load: async () => ({ events: [] }), render: () => [], openMain: vi.fn(), working: () => false });
+    panel.update('prime', [{ id: 'w', title: 'worker-1', conversationId: 'c', startedAt: Date.now(), updatedAt: Date.now(),
+      origin: { kind: 'worker', fromSessionId: 'prime', agentId: 'worker-1', task: 'Review' } } as SessionSummary]);
+    panel.showWorkers(['w'], false);
+    expect(host.querySelectorAll('.is-arriving')).toHaveLength(1);
+    // Nothing repaints the list (closing the sidebar only moves it): the class still leaves.
+    vi.advanceTimersByTime(1600);
+    expect(host.querySelectorAll('.is-arriving')).toHaveLength(0);
+    expect(host.querySelectorAll('.is-round-worker')).toHaveLength(1);
+  } finally { vi.useRealTimers(); }
+});
+
+it('shows latest recorded worker activity and action count without loading worker history', () => {
+  dom = new JSDOM('<main></main><button></button>');
+  Object.assign(globalThis, { document: dom.window.document });
+  const host = document.querySelector('main')!, toggle = document.querySelector('button')!;
+  const load = vi.fn(async () => ({ events: [] }));
+  const now = Date.now();
+  const panel = createAgentPanel({
+    host,
+    toggle,
+    load,
+    render: () => [],
+    openMain: vi.fn(),
+    working: () => true
+  });
+  const worker = {
+    id: 'worker',
+    title: 'worker-2',
+    conversationId: 'chat-worker',
+    startedAt: now - 90_000,
+    updatedAt: now,
+    toolCalls: 1_200,
+    lastToolCallAt: now - 1_000,
+    lastToolActivity: { kind: 'read', title: 'Read src/main/agents.ts' },
+    origin: { kind: 'worker', fromSessionId: 'prime', agentId: 'worker-2', task: 'Inspect activity' }
+  } as SessionSummary;
+
+  panel.update('prime', [worker]);
+  toggle.click();
+  expect(load).not.toHaveBeenCalled();
+  expect(host.querySelector('.agent-card-activity')?.textContent).toBe('Read src/main/agents.ts');
+  expect((host.querySelector('.agent-card-activity') as HTMLElement)?.dataset.kind).toBe('read');
+  expect(host.querySelector('.agent-card-meta')?.textContent).toContain('1.2k actions');
+
+  panel.update('prime', [{
+    ...worker,
+    updatedAt: now + 1,
+    toolCalls: 1_201,
+    lastToolCallAt: now + 1,
+    lastToolActivity: { kind: 'run', title: 'Ran npm test' }
+  }]);
+  expect(load).not.toHaveBeenCalled();
+  expect(host.querySelector('.agent-card-activity')?.textContent).toBe('Ran npm test');
+  expect(host.querySelector('.agent-card-meta')?.textContent).toContain('1.2k actions');
+});
+
+it('uses the exact broker worker state and reused assignment over stale session metadata', () => {
+  dom = new JSDOM('<main></main><button></button>');
+  Object.assign(globalThis, { document: dom.window.document });
+  const host = document.querySelector('main')!, toggle = document.querySelector('button')!;
+  const panel = createAgentPanel({ host, toggle, load: async () => ({ events: [] }), render: () => [], openMain: vi.fn(),
+    working: () => false, agent: () => ({ state: 'failed', task: 'Review the final package' }) });
+  panel.update('prime', [{ id: 'worker', title: 'worker-2 · Original work', conversationId: 'chat',
+    startedAt: Date.now() - 30_000, updatedAt: Date.now(), endedAt: null,
+    origin: { kind: 'worker', fromSessionId: 'prime', agentId: 'worker-2', task: 'Original work' } } as SessionSummary]);
+  toggle.click();
+  const card = host.querySelector<HTMLElement>('.agent-panel-row')!;
+  expect(card.dataset.state).toBe('failed');
+  expect(card.querySelector('.agent-card-task')!.textContent).toBe('Review the final package');
+  expect(host.textContent).toContain('History · 1 · 1 failed');
+});
+
+it('groups a failed broker worker under History even with recent session activity', () => {
+  dom = new JSDOM('<main></main><button></button>');
+  Object.assign(globalThis, { document: dom.window.document });
+  const host = document.querySelector('main')!, toggle = document.querySelector('button')!;
+  const panel = createAgentPanel({ host, toggle, load: async () => ({ events: [] }), render: () => [], openMain: vi.fn(),
+    working: () => true, agent: () => ({ state: 'failed', task: 'Review the final package' }) });
+  panel.update('prime', [{ id: 'worker', title: 'worker-2', conversationId: 'chat', startedAt: Date.now() - 1000,
+    updatedAt: Date.now(), origin: { kind: 'worker', fromSessionId: 'prime', agentId: 'worker-2', task: 'Review' } } as SessionSummary]);
+  toggle.click();
+  expect(host.textContent).toContain('Active · 0');
+  expect(host.textContent).toContain('History · 1 · 1 failed');
+});
+
+it('adds failures to the existing History heading without a standalone summary row', () => {
+  dom = new JSDOM('<main></main><button></button>');
+  Object.assign(globalThis, { document: dom.window.document });
+  const host = document.querySelector('main')!, toggle = document.querySelector('button')!;
+  const panel = createAgentPanel({
+    host,
+    toggle,
+    load: async () => ({ events: [] }),
+    render: () => [],
+    openMain: vi.fn(),
+    working: worker => worker.id === 'fallback-running',
+    agent: worker => worker.id === 'active' ? { state: 'active', task: 'Run tests', conversationId: 'chat-active' }
+      : worker.id === 'done' ? { state: 'sleeping', task: 'Review code', conversationId: 'chat-done' }
+        : worker.id === 'failed' ? { state: 'failed', task: 'Check build', conversationId: 'chat-failed' }
+          : null
+  });
+  panel.update('prime', [
+    { id: 'active', title: 'worker-1', conversationId: 'chat-active', startedAt: 1, updatedAt: 2,
+      origin: { kind: 'worker', fromSessionId: 'prime', agentId: 'worker-1', task: 'Run tests' } },
+    { id: 'fallback-running', title: 'worker-2', conversationId: 'chat-fallback', startedAt: 1, updatedAt: 2,
+      origin: { kind: 'worker', fromSessionId: 'prime', agentId: 'worker-2', task: 'Inspect current work' } },
+    { id: 'done', title: 'worker-3', conversationId: 'chat-done', startedAt: 1, updatedAt: 2,
+      origin: { kind: 'worker', fromSessionId: 'prime', agentId: 'worker-3', task: 'Review code' } },
+    { id: 'failed', title: 'worker-4', conversationId: 'chat-failed', startedAt: 1, updatedAt: 2,
+      origin: { kind: 'worker', fromSessionId: 'prime', agentId: 'worker-4', task: 'Check build' } }
+  ] as SessionSummary[]);
+  toggle.click();
+  expect(host.querySelector('.agent-panel-summary')).toBeNull();
+  expect(host.textContent).toContain('Active · 2');
+  expect(host.textContent).toContain('History · 2 · 1 failed');
+  expect(host.textContent).not.toContain('4 workers · 2 running · 1 done · 1 failed');
+});
+
+
+it('counts slot-holding workers against the slot limit in the Active heading', () => {
+  dom = new JSDOM('<main></main><button></button>');
+  Object.assign(globalThis, { document: dom.window.document });
+  const host = document.querySelector('main')!, toggle = document.querySelector('button')!;
+  let limit: number | null = 3;
+  const states: Record<string, 'active' | 'detached' | 'sleeping'> = { one: 'active', two: 'detached', three: 'sleeping' };
+  const panel = createAgentPanel({
+    host, toggle, load: async () => ({ events: [] }), render: () => [], openMain: vi.fn(), working: () => false,
+    agent: worker => ({ state: states[worker.id]!, task: 'Task', conversationId: `chat-${worker.id}` }),
+    slotLimit: () => limit
+  });
+  panel.update('prime', ['one', 'two', 'three'].map(id => ({ id, title: id, conversationId: `chat-${id}`, startedAt: 1, updatedAt: 2 } as SessionSummary)));
+  toggle.click();
+  const headings = (): string[] => [...host.querySelectorAll('h3')].map(heading => heading.textContent ?? '');
+  // A sleeping worker holds no slot: it counts under History, with no limit beside it.
+  expect(headings()).toEqual(['Active · 2 / 3', 'History · 1']);
+  limit = 2; panel.refreshSlots();
+  expect(headings()).toEqual(['Active · 2 / 2', 'History · 1']);
+  limit = null; panel.refreshSlots();
+  expect(headings()).toEqual(['Active · 2', 'History · 1']);
+});
+
+it('takes the lower of the per-chat and all-chats worker limits, and none while multi-agent is off', () => {
+  expect(workerSlotLimit(undefined)).toBeNull();
+  expect(workerSlotLimit({ enabled: false, maxWorkers: 3 })).toBeNull();
+  expect(workerSlotLimit({ enabled: true, maxWorkers: 3 })).toBe(3);
+  expect(workerSlotLimit({ enabled: true, maxWorkers: 3, globalMaxWorkers: 0 })).toBe(3);
+  expect(workerSlotLimit({ enabled: true, maxWorkers: 3, globalMaxWorkers: 2 })).toBe(2);
+  expect(workerSlotLimit({ enabled: true, maxWorkers: 3, globalMaxWorkers: 6 })).toBe(3);
+});
+
+it('shows bounded worker health in the overview without changing lifecycle ownership', () => {
+  dom = new JSDOM('<main></main><button></button>');
+  Object.assign(globalThis, { document: dom.window.document });
+  const host = document.querySelector('main')!, toggle = document.querySelector('button')!;
+  const panel = createAgentPanel({
+    host,
+    toggle,
+    load: async () => ({ events: [] }),
+    render: () => [],
+    openMain: vi.fn(),
+    working: () => false,
+    agent: () => ({ state: 'detached', task: 'Inspect the build', conversationId: 'chat-worker' })
+  });
+  panel.update('prime', [{
+    id: 'worker',
+    title: 'worker-1 · Inspect the build',
+    conversationId: 'chat-worker',
+    startedAt: Date.now() - 5_000,
+    updatedAt: Date.now(),
+    activeTurnId: null,
+    origin: { kind: 'worker', fromSessionId: 'prime', agentId: 'worker-1', task: 'Inspect the build' }
+  } as SessionSummary]);
+  toggle.click();
+  const card = host.querySelector<HTMLElement>('.agent-panel-row')!;
+  expect(card.dataset.health).toBe('degraded');
+  expect(card.querySelector('.agent-card-health')?.textContent).toBe('Degraded');
+  expect(card.querySelector<HTMLElement>('.agent-card-health')?.getAttribute('title')).toBeNull();
+});
+
+it('keeps archived names and assignments after broker eviction, fenced by exact identity', () => {
+  dom = new JSDOM('<main></main>'); Object.assign(globalThis, { document: dom.window.document });
+  const host = document.querySelector('main')!;
+  const panel = createAgentPanel({ host, load: async () => ({ events: [] }), render: () => [], openMain: vi.fn(), working: () => false });
+  const worker = { id: 'local', title: 'worker-2', conversationId: 'chat', startedAt: 1, updatedAt: 2,
+    origin: { kind: 'worker', fromSessionId: 'prime', agentId: 'worker-2', task: 'Original task' },
+    workerAssignment: { conversationId: 'chat', agentId: 'worker-2', label: 'Divisao', task: '144/12', recordedAt: 2 }
+  } as SessionSummary;
+  panel.update('prime', [worker]); panel.show();
+  expect(host.querySelector('.agent-card-name')?.textContent).toBe('Divisao');
+  expect(host.querySelector('.agent-card-task')?.textContent).toBe('144/12');
+  panel.update('prime', [{ ...worker, conversationId: 'different-chat' }]);
+  expect(host.querySelector('.agent-card-name')?.textContent).toBe('Worker 2');
+  expect(host.querySelector('.agent-card-task')?.textContent).toBe('Original task');
+});
+
+it('hides prior finish and prior-turn activity when a worker starts its next assignment', () => {
+  dom = new JSDOM('<main></main>'); Object.assign(globalThis, { document: dom.window.document });
+  const host = document.querySelector('main')!;
+  const panel = createAgentPanel({ host, load: async () => ({ events: [] }), render: () => [], openMain: vi.fn(), working: () => true });
+  const worker = { id: 'local', title: 'worker-1', startedAt: 1, updatedAt: 20,
+    lastToolCallAt: 10, lastFinishReportAt: 10, lastToolActivity: { kind: 'agent', title: 'Reported the finished task' }
+  } as SessionSummary;
+  panel.update('prime', [worker]); panel.show();
+  expect(host.querySelector('.agent-card-activity')).toBeNull();
+  panel.update('prime', [{ ...worker, lastFinishReportAt: null, lastTurnEndAt: 15 }]);
+  expect(host.querySelector('.agent-card-activity')).toBeNull();
+  panel.update('prime', [{ ...worker, lastToolCallAt: 21, lastToolActivity: { kind: 'run', title: 'Ran 4+4' } }]);
+  expect(host.querySelector('.agent-card-activity')?.textContent).toBe('Ran 4+4');
+});
+
+it('opens a worker on its Activity and keeps the chosen view from worker to worker (#105)', async () => {
+  dom = new JSDOM('<main></main>');
+  Object.assign(globalThis, { document: dom.window.document });
+  const load = vi.fn().mockResolvedValue({ events: [] });
+  const loadActivity = vi.fn().mockResolvedValue([
+    { seq: 1, time: 0, source: 'app', kind: 'session_start', conversationId: null, title: 'w' },
+    { seq: 2, time: 1, source: 'app', kind: 'tool_call', call: { callId: 'a', tool: 'apply_patch', outcome: 'ok', summary: { title: 'Edited a.ts', tone: 'neutral', kind: 'edit', metric: '+3 −1' },
+      changes: [{ path: 'src/a.ts', added: 3, removed: 1, approximate: false }] } }
+  ]);
+  const render = vi.fn(() => [Object.assign(document.createElement('article'), { textContent: 'conversation' })]);
+  const panel = createAgentPanel({ host: document.querySelector('main')!, load, loadActivity, render, openMain: vi.fn(), working: () => false });
+  const workers = [{ id: 'one', title: 'One', updatedAt: 1, origin: { agentId: 'worker-1', task: 'Audit the parser' } },
+    { id: 'two', title: 'Two', updatedAt: 1 }] as SessionSummary[];
+  panel.update('prime', workers);
+  await panel.open('one');
+  const tabs = () => [...document.querySelectorAll<HTMLButtonElement>('[role="tab"]')];
+  expect(tabs().map(tab => [tab.textContent, tab.getAttribute('aria-selected'), tab.tabIndex])).toEqual([
+    ['Activity', 'true', 0], ['Conversation', 'false', -1], ['Completion report', 'false', -1]
+  ]);
+  expect(loadActivity).toHaveBeenCalledWith('one'); expect(load).not.toHaveBeenCalled();
+  const body = document.querySelector('.agent-panel-body')!;
+  expect(body.querySelector('.agent-activity-task')?.textContent).toBe('Audit the parser');
+  expect(body.querySelector('.agent-activity-title')?.textContent).toBe('Edited a.ts');
+  expect(body.querySelector('.agent-activity-metric')?.textContent).toBe('+3 −1');
+  expect(body.querySelector('.agent-activity-file-name')?.textContent).toBe('a.tssrc');
+  expect([...body.querySelectorAll('.agent-activity-file-counts span')].map(span => span.textContent)).toEqual(['+3', '−1']);
+  expect([...body.querySelectorAll('button')].some(button => button.textContent === 'Open full chat')).toBe(true);
+
+  tabs()[1]!.click(); await Promise.resolve(); await Promise.resolve();
+  expect(load).toHaveBeenCalledWith('one');
+  expect(body.textContent).toContain('conversation');
+  expect(tabs()[1]!.getAttribute('aria-selected')).toBe('true');
+  (document.querySelector('.agent-back') as HTMLButtonElement).click();
+  await panel.open('two');
+  expect(load).toHaveBeenLastCalledWith('two');
+  expect(loadActivity).toHaveBeenCalledTimes(1);
+
+  loadActivity.mockResolvedValue([]);
+  tabs()[1]!.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Home', bubbles: true }));
+  await Promise.resolve(); await Promise.resolve();
+  expect(loadActivity).toHaveBeenLastCalledWith('two');
+  expect(document.activeElement).toBe(tabs()[0]);
+  expect(body.querySelector('.agent-activity-empty')?.textContent).toBe('No actions yet');
+});
+
+it('drops a view that answers after the reader switched to the other one', async () => {
+  dom = new JSDOM('<main></main>');
+  Object.assign(globalThis, { document: dom.window.document });
+  let resolve!: (value: []) => void;
+  const loadActivity = vi.fn(() => new Promise<[]>(done => { resolve = done; }));
+  const render = vi.fn(() => [Object.assign(document.createElement('article'), { textContent: 'conversation' })]);
+  const panel = createAgentPanel({ host: document.querySelector('main')!, load: async () => ({ events: [] }), loadActivity, render, openMain: vi.fn(), working: () => false });
+  panel.update('prime', [{ id: 'one', title: 'One', updatedAt: 1 } as SessionSummary]);
+  const pending = panel.open('one');
+  document.querySelectorAll<HTMLButtonElement>('[role="tab"]')[1]!.click();
+  await Promise.resolve(); await Promise.resolve();
+  resolve([]); await pending;
+  const body = document.querySelector('.agent-panel-body')!;
+  expect(body.textContent).toContain('conversation');
+  expect(body.querySelector('.agent-activity-heading')).toBeNull();
+});
+
+it('keeps a failed worker\'s last action in the roster', () => {
+  dom = new JSDOM('<main></main><button></button>');
+  Object.assign(globalThis, { document: dom.window.document });
+  const toggle = document.querySelector('button')!;
+  const panel = createAgentPanel({ host: document.querySelector('main')!, toggle, load: async () => null, render: () => [], openMain: vi.fn(), working: () => false,
+    agent: () => ({ state: 'failed', task: 'Run the tests', conversationId: 'c' }) });
+  panel.update('prime', [{ id: 'one', title: 'One', updatedAt: 1, startedAt: 0, conversationId: 'c', origin: { agentId: 'worker-1' },
+    lastToolActivity: { title: 'Ran npm test', kind: 'run', since: 1 } } as unknown as SessionSummary]);
+  toggle.click();
+  expect(document.querySelector('.agent-card-last')?.textContent).toBe('Last action: Ran npm test');
+  expect(document.querySelector('.agent-card-activity')).toBeNull();
+});
+
+it("gives each worker one line of what it is doing: a wait on ChatGPT's approval, its step, its answer (#1831)", () => {
+  dom = new JSDOM('<main></main>'); Object.assign(globalThis, { document: dom.window.document });
+  const host = document.querySelector('main')!;
+  const now = Date.now();
+  const states: Record<string, string> = { a: 'active', b: 'active', c: 'sleeping' };
+  const panel = createAgentPanel({ host, load: async () => ({ events: [] }), render: () => [], openMain: vi.fn(), working: worker => states[worker.id] === 'active',
+    agent: worker => ({ state: states[worker.id] as any, task: 'Task', conversationId: `c-${worker.id}` }) });
+  const worker = (id: string, extra: Partial<SessionSummary>) => ({ id, title: id, conversationId: `c-${id}`, startedAt: now - 60_000, updatedAt: now,
+    toolCalls: 3, lastToolCallAt: now - 5_000, lastToolActivity: { kind: 'run', title: 'Ran npm test' }, origin: { kind: 'worker', fromSessionId: 'p', agentId: `worker-${id}`, task: 'Task' },
+    ...extra }) as SessionSummary;
+  const line = (id: string) => host.querySelector<HTMLElement>(`[data-worker-session="${id}"] .agent-card-line`);
+  panel.update('p', [
+    // Held by ChatGPT's approval card: that comes first, whatever else it did.
+    worker('a', { approvalWaitingAt: now - 1_000 }),
+    // A failed step keeps its tool row's color.
+    worker('b', { lastToolActivity: { kind: 'run', title: 'Ran npm test -- dashboard', tone: 'bad' } }),
+    // Finished: it keeps the first line of its last answer.
+    worker('c', { endedAt: now, lastAssistantFinalAt: now - 1_000, lastAnswerLine: 'Done. All 12 tests pass now' })
+  ]);
+  panel.show();
+  expect(line('a')!.textContent).toBe('Needs your answer in DeepSeek');
+  expect(line('a')!.dataset.tone).toBe('warn');
+  expect(line('b')!.textContent).toBe('Ran npm test -- dashboard');
+  expect(line('b')!.dataset.tone).toBe('bad');
+  expect(line('c')!.textContent).toBe('Done. All 12 tests pass now');
+  expect(line('c')!.classList.contains('agent-card-answer')).toBe(true);
+  // A long line is cut by the card's width; the whole of it is one hover away, and part of the row's name.
+  for (const id of ['a', 'b', 'c']) {
+    expect(line(id)!.title).toBe(line(id)!.textContent);
+    expect(host.querySelector<HTMLElement>(`[data-worker-session="${id}"]`)!.title).toContain(line(id)!.textContent!);
+  }
+  // A working worker that answered after its last step shows that answer, not the older step.
+  panel.update('p', [worker('b', { lastAssistantFinalAt: now - 1_000, lastAnswerLine: 'Found it: a stale fixture' })]);
+  expect(line('b')!.textContent).toBe('Found it: a stale fixture');
+  // Nothing to say yet: no empty line.
+  panel.update('p', [worker('b', { toolCalls: 0, lastToolCallAt: null, lastToolActivity: null })]);
+  expect(line('b')).toBeNull();
+  // Being woken for a new job: its previous answer belongs to the old job, so it is not shown (CodeRabbit).
+  states.c = 'waking';
+  panel.update('p', [worker('c', { lastAssistantFinalAt: now - 1_000, lastAnswerLine: 'Done. All 12 tests pass now' })]);
+  expect(line('c')).toBeNull();
+});

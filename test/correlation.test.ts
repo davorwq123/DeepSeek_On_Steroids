@@ -1,0 +1,555 @@
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { flushDurable, initDurableStore, readDurable, resetDurableForTests, writeDurableNow } from '../src/main/durable.js';
+import {
+  appendEvent,
+  createSession,
+  initSessionStore,
+  resetSessionStoreForTests,
+  unsetSessionRootForTests
+} from '../src/main/session/store.js';
+import {
+  observeRequestCorrelation,
+  observeRequestCorrelations,
+  requestCorrelation,
+  awaitRequestCorrelation,
+  restoreRequestCorrelations,
+  resetCorrelationRegistryForTests
+} from '../src/main/session/correlation.js';
+
+describe('request correlation ownership', () => {
+  beforeEach(() => resetCorrelationRegistryForTests());
+  afterEach(() => vi.useRealTimers());
+
+  it('spends grace once per request while accepting late exact evidence', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+    const first = awaitRequestCorrelation('wfr-missing', 60);
+    await vi.advanceTimersByTimeAsync(60);
+    expect(await first).toBeNull();
+    expect(await awaitRequestCorrelation('wfr-missing', 60)).toBeNull();
+    expect(vi.getTimerCount()).toBe(0);
+
+    const other = awaitRequestCorrelation('wfr-other', 60);
+    expect(vi.getTimerCount()).toBe(1);
+    await vi.advanceTimersByTimeAsync(60);
+    expect(await other).toBeNull();
+
+    observeRequestCorrelation({ requestId: 'wfr-missing', conversationId: 'conv-late',
+      sessionId: 'session-late', messageId: 'message-late', tool: '', observedAt: 1 });
+    expect((await awaitRequestCorrelation('wfr-missing', 60))?.conversationId).toBe('conv-late');
+  });
+
+  // #1752: ChatGPT sometimes sends a tool call's request id with another UUID version digit than the
+  // page's message holds (live: page 93ff44d2-cfea-4f32-…, calls 93ff44d2-cfea-9f32-…); every such call
+  // went unattributed. The other 31 hex digits are random, so they still name one request.
+  it('joins a request id that differs from the page\'s only in its UUID version digit', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+    const page = '93ff44d2-cfea-4f32-8ea7-7a991c9cfe49';
+    const call = '93ff44d2-cfea-9f32-8ea7-7a991c9cfe49';
+    const waiting = awaitRequestCorrelation(call, 20_000);
+    observeRequestCorrelation({ requestId: page, conversationId: 'conv-version', sessionId: 'session-version', messageId: 'm', tool: '', observedAt: 1 });
+    expect((await waiting)?.conversationId).toBe('conv-version');
+    expect(requestCorrelation(call)?.conversationId).toBe('conv-version');
+    expect(requestCorrelation(call.toUpperCase())?.conversationId).toBe('conv-version');
+    // Any other difference is another request.
+    expect(requestCorrelation('93ff44d2-cfea-9f32-8ea7-7a991c9cfe4a')).toBeNull();
+    expect(requestCorrelation('93ff44d2-cfeb-4f32-8ea7-7a991c9cfe49')).toBeNull();
+    // Ids that are not UUIDs are joined exactly, as before.
+    observeRequestCorrelation({ requestId: 'wfr_01a0ec298ec4718b8145bf6a9c2413a2', conversationId: 'conv-wfr', sessionId: 's', messageId: 'm', tool: '', observedAt: 2 });
+    expect(requestCorrelation('wfr_01a0ec298ec4718b8145bf6a9c2413a2')?.conversationId).toBe('conv-wfr');
+    expect(requestCorrelation('wfr_01a0ec298ec4719b8145bf6a9c2413a2')).toBeNull();
+    // An exact-match id never shares a key with a UUID, even one spelled like it without the version digit.
+    expect(requestCorrelation('93ff44d2-cfea-f32-8ea7-7a991c9cfe49')).toBeNull();
+    observeRequestCorrelation({ requestId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'.slice(0, 14) + 'ccc-dddd-eeeeeeeeeeee', conversationId: 'conv-plain', sessionId: 's', messageId: 'm', tool: '', observedAt: 4 });
+    expect(requestCorrelation('aaaaaaaa-bbbb-4ccc-dddd-eeeeeeeeeeee')).toBeNull();
+    // A second conversation claiming the same request through the other spelling is refused, as for one spelling.
+    expect(observeRequestCorrelation({ requestId: call, conversationId: 'conv-other', sessionId: 'x', messageId: 'm', tool: '', observedAt: 3 })).toBe('refused');
+  });
+
+  it('shares a deadline across overlapping callers instead of restarting their grace', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+    const first = awaitRequestCorrelation('wfr-overlap', 100);
+    await vi.advanceTimersByTimeAsync(40);
+    const second = awaitRequestCorrelation('wfr-overlap', 100);
+    await vi.advanceTimersByTimeAsync(60);
+    expect(await first).toBeNull();
+    expect(await second).toBeNull();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('retains the remaining longer recorder grace after a shorter identity timeout', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+    const short = awaitRequestCorrelation('wfr-longer', 15);
+    await vi.advanceTimersByTimeAsync(15);
+    expect(await short).toBeNull();
+    const longer = awaitRequestCorrelation('wfr-longer', 20);
+    await vi.advanceTimersByTimeAsync(4);
+    expect(vi.getTimerCount()).toBe(1);
+    observeRequestCorrelation({ requestId: 'wfr-longer', conversationId: 'conv-proved',
+      sessionId: 'session-proved', messageId: 'message-proved', tool: '', observedAt: 1 });
+    expect((await longer)?.conversationId).toBe('conv-proved');
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('ends the longer grace at its original deadline and leaves zero-time lookups uncharged', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+    expect(await awaitRequestCorrelation('wfr-budget', 0)).toBeNull();
+    await vi.advanceTimersByTimeAsync(100);
+    const short = awaitRequestCorrelation('wfr-budget', 15);
+    await vi.advanceTimersByTimeAsync(15);
+    expect(await short).toBeNull();
+    const longer = awaitRequestCorrelation('wfr-budget', 20);
+    await vi.advanceTimersByTimeAsync(5);
+    expect(await longer).toBeNull();
+    expect(await awaitRequestCorrelation('wfr-budget', 20)).toBeNull();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('keeps one turn-level request id owned across different MCP messages and tools', () => {
+    const requestId = 'wfr_shared_turn';
+    const now = Date.now();
+    expect(
+      observeRequestCorrelation({
+        requestId,
+        conversationId: 'conv-a',
+        sessionId: 'session-a',
+        messageId: 'msg-read',
+        tool: 'read',
+        observedAt: now
+      })
+    ).toBe('stored');
+    expect(
+      observeRequestCorrelation({
+        requestId,
+        conversationId: 'conv-a',
+        sessionId: 'session-a-later',
+        messageId: 'msg-exec',
+        tool: 'exec_command',
+        observedAt: now + 1
+      })
+    ).toBe('same');
+    expect(
+      observeRequestCorrelation({
+        requestId,
+        conversationId: 'conv-a',
+        sessionId: 'session-a-later',
+        messageId: 'msg-session',
+        tool: 'session',
+        observedAt: now + 2
+      })
+    ).toBe('same');
+
+    expect(requestCorrelation(requestId)?.conversationId).toBe('conv-a');
+    expect(requestCorrelation(requestId)?.sessionId).toBe('session-a');
+  });
+
+  /**
+   * The rule the whole registry exists to keep: a request id is bound to a chat once, and then
+   * it is that chat's for good.
+   *
+   * A second conversation claiming a proven id is a page that is wrong about itself - a React
+   * tree still mounted from the chat before it, a fresh chat whose client thread id has not
+   * caught up. Believing it used to cost the id itself: the entry went permanently unresolved,
+   * so every further call of a workflow that was still running waited fifteen seconds for
+   * evidence that could no longer be accepted, and landed in Unattributed activity. Refusing
+   * the claimant costs the claimant nothing that was ever really theirs.
+   */
+  it('keeps the first proven owner when a second conversation claims the same request id', () => {
+    const requestId = 'wfr_cross_chat';
+    const now = Date.now();
+    observeRequestCorrelation({
+      requestId,
+      conversationId: 'conv-a',
+      sessionId: 'session-a',
+      messageId: 'msg-a',
+      tool: 'read',
+      observedAt: now
+    });
+    expect(
+      observeRequestCorrelation({
+        requestId,
+        conversationId: 'conv-a',
+        sessionId: 'session-a',
+        messageId: 'msg-a-refresh',
+        tool: 'read',
+        observedAt: now + 1
+      })
+    ).toBe('same');
+    expect(
+      observeRequestCorrelation({
+        requestId,
+        conversationId: 'conv-b',
+        sessionId: 'session-b',
+        messageId: 'msg-b',
+        tool: 'read',
+        observedAt: now + 2
+      })
+    ).toBe('refused');
+    expect(requestCorrelation(requestId)?.conversationId).toBe('conv-a');
+    expect(requestCorrelation(requestId)?.sessionId).toBe('session-a');
+
+    // And the owner is still an owner afterwards, not a survivor in a degraded state: its own
+    // later sightings keep being accepted exactly as they were before anyone argued.
+    expect(
+      observeRequestCorrelation({
+        requestId,
+        conversationId: 'conv-a',
+        sessionId: 'session-a',
+        messageId: 'msg-a-later',
+        tool: 'exec_command',
+        observedAt: now + 3
+      })
+    ).toBe('same');
+    expect(requestCorrelation(requestId)?.observedAt).toBe(now + 3);
+  });
+
+  it('does not age a proven request owner out just because the page evidence is old', () => {
+    const requestId = 'wfr_long_running_workflow';
+    observeRequestCorrelation({
+      requestId,
+      conversationId: 'conv-a',
+      sessionId: 'session-a',
+      messageId: 'msg-a',
+      tool: 'exec_command',
+      // Deliberately ancient. 1.8.1 forgot this after ten minutes and started filing later
+      // calls from the same still-running workflow into Unattributed activity.
+      observedAt: 1
+    });
+
+    expect(requestCorrelation(requestId)?.conversationId).toBe('conv-a');
+  });
+
+  it('evicts by latest same-owner observation rather than original insertion order', () => {
+    const refreshedId = 'wfr_refreshed_old_request';
+    const correlation = (requestId: string, observedAt: number) => ({
+      requestId,
+      conversationId: 'conv-a',
+      sessionId: 'session-a',
+      messageId: `msg-${requestId}`,
+      tool: 'read',
+      observedAt
+    });
+
+    // Fill the bounded registry exactly. The request we care about is deliberately the oldest
+    // insertion, then is observed again immediately before one new id forces an eviction.
+    observeRequestCorrelations([
+      correlation(refreshedId, 1),
+      ...Array.from({ length: 49_999 }, (_, index) => correlation(`wfr_fill_${index}`, index + 2))
+    ]);
+    expect(
+      observeRequestCorrelation({
+        ...correlation(refreshedId, 100_000),
+        messageId: 'msg-refreshed'
+      })
+    ).toBe('same');
+
+    observeRequestCorrelation(correlation('wfr_newest', 100_001));
+
+    expect(requestCorrelation(refreshedId)?.conversationId).toBe('conv-a');
+    expect(requestCorrelation(refreshedId)?.observedAt).toBe(100_000);
+    expect(requestCorrelation('wfr_fill_0')).toBeNull();
+  });
+
+  it('restores proven request ownership from durable state after an app restart', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'clf-correlation-'));
+    try {
+      resetDurableForTests();
+      initDurableStore(dir);
+      const requestId = 'wfr_survives_restart';
+      observeRequestCorrelation({
+        requestId,
+        conversationId: 'conv-durable',
+        sessionId: 'session-durable',
+        messageId: 'msg-durable',
+        tool: 'read',
+        observedAt: 123
+      });
+      await flushDurable();
+
+      resetCorrelationRegistryForTests();
+      expect(requestCorrelation(requestId)).toBeNull();
+
+      await restoreRequestCorrelations();
+      expect(requestCorrelation(requestId)?.conversationId).toBe('conv-durable');
+      expect(requestCorrelation(requestId)?.sessionId).toBe('session-durable');
+    } finally {
+      resetCorrelationRegistryForTests();
+      resetDurableForTests();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * ChatGPT publishes `metadata.request_id` before the `api_tool` message that names the tool,
+   * and the bridge stores that early sighting with an empty tool on purpose: the join never uses
+   * the name, and waiting for it is what used to file the call under Unattributed activity. Two
+   * such rows sat in the live 2026-09-01 registry. Both would have been thrown away on the next
+   * launch by a validity check stricter than the registry's own answer, taking the proven owner
+   * of a workflow whose calls could still be arriving.
+   */
+  it('restores an owner proved by a request id ChatGPT had not yet given a tool name', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'clf-correlation-untooled-'));
+    try {
+      resetDurableForTests();
+      initDurableStore(dir);
+      const requestId = 'f0f00012-1111-4111-8111-111111111111';
+      observeRequestCorrelation({
+        requestId,
+        conversationId: 'conv-bare-request-id',
+        sessionId: '2026-01-01-00000028',
+        messageId: 'f0f00013-1111-4111-8111-111111111111',
+        tool: '',
+        observedAt: 1_788_276_631_192
+      });
+      await flushDurable();
+
+      resetCorrelationRegistryForTests();
+      await restoreRequestCorrelations();
+
+      expect(requestCorrelation(requestId)?.conversationId).toBe('conv-bare-request-id');
+      expect(requestCorrelation(requestId)?.sessionId).toBe('2026-01-01-00000028');
+    } finally {
+      resetCorrelationRegistryForTests();
+      resetDurableForTests();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('migrates older proven owners and forgets the sticky conflicts those versions wrote', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'clf-correlation-v3-conflict-'));
+    try {
+      resetDurableForTests();
+      resetSessionStoreForTests();
+      initDurableStore(dir);
+      initSessionStore(dir);
+      await writeDurableNow('request-correlations', {
+        version: 3,
+        entries: [
+          {
+            requestId: 'wfr_v3_proven_owner',
+            value: {
+              requestId: 'wfr_v3_proven_owner',
+              conversationId: 'conv-v3-proven',
+              sessionId: 'session-v3-proven',
+              messageId: 'message-v3-proven',
+              tool: 'read',
+              observedAt: 100
+            },
+            conflicted: false
+          },
+          {
+            requestId: 'wfr_v3_false_conflict',
+            value: null,
+            conflicted: true
+          }
+        ]
+      });
+
+      resetCorrelationRegistryForTests();
+      await restoreRequestCorrelations();
+      expect(requestCorrelation('wfr_v3_proven_owner')?.conversationId).toBe('conv-v3-proven');
+      // Forgotten, not restored as a verdict: the id is simply unproved again, and the next page
+      // that proves it owns it.
+      expect(requestCorrelation('wfr_v3_false_conflict')).toBeNull();
+      expect(
+        observeRequestCorrelation({
+          requestId: 'wfr_v3_false_conflict',
+          conversationId: 'conv-after-migration',
+          sessionId: 'session-after-migration',
+          messageId: 'message-after-migration',
+          tool: 'read',
+          observedAt: 200
+        })
+      ).toBe('stored');
+    } finally {
+      resetCorrelationRegistryForTests();
+      resetSessionStoreForTests();
+      unsetSessionRootForTests();
+      resetDurableForTests();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('rebuilds the first 1.8.2 owner index from already-attributed session history', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'clf-correlation-migrate-'));
+    try {
+      resetDurableForTests();
+      resetSessionStoreForTests();
+      initDurableStore(dir);
+      initSessionStore(dir);
+
+      const session = await createSession({ title: 'old attributed history', conversationId: 'conv-history' });
+      await appendEvent(session.id, {
+        time: 200,
+        source: 'mcp',
+        kind: 'tool_call',
+        call: {
+          callId: 'call-history',
+          tool: 'read',
+          attribution: 'request_id',
+          requestId: 'wfr_history',
+          conversationId: 'conv-history',
+          attributionMethod: 'request_id',
+          args: { text: '{}', truncated: false, chars: 2 },
+          result: { text: 'ok', truncated: false, chars: 2 },
+          outcome: 'ok',
+          durationMs: 1,
+          summary: { kind: 'read', tone: 'neutral', title: 'Read history' }
+        }
+      });
+
+      resetCorrelationRegistryForTests();
+      await restoreRequestCorrelations();
+      expect(requestCorrelation('wfr_history')?.conversationId).toBe('conv-history');
+      expect(requestCorrelation('wfr_history')?.sessionId).toBe(session.id);
+
+      await flushDurable();
+      resetCorrelationRegistryForTests();
+      resetSessionStoreForTests();
+      unsetSessionRootForTests();
+      await restoreRequestCorrelations();
+      expect(requestCorrelation('wfr_history')?.conversationId).toBe('conv-history');
+      expect(requestCorrelation('wfr_history')?.sessionId).toBe(session.id);
+    } finally {
+      resetCorrelationRegistryForTests();
+      resetSessionStoreForTests();
+      unsetSessionRootForTests();
+      resetDurableForTests();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('reconciles a valid stale snapshot with newer durable attributed history', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'clf-correlation-stale-'));
+    try {
+      resetDurableForTests();
+      resetSessionStoreForTests();
+      initDurableStore(dir);
+      initSessionStore(dir);
+      const conversationId = 'conv-stale-reconcile';
+      const session = await createSession({ title: 'stale correlation snapshot', conversationId });
+      const toolCall = (callId: string, requestId: string, time: number) => ({
+        time,
+        source: 'mcp' as const,
+        kind: 'tool_call' as const,
+        call: {
+          callId,
+          tool: 'read',
+          attribution: 'request_id' as const,
+          requestId,
+          conversationId,
+          attributionMethod: 'request_id' as const,
+          args: { text: '{}', truncated: false, chars: 2 },
+          result: { text: 'ok', truncated: false, chars: 2 },
+          outcome: 'ok' as const,
+          durationMs: 1,
+          summary: { kind: 'read' as const, tone: 'neutral' as const, title: callId }
+        }
+      });
+
+      observeRequestCorrelation({
+        requestId: 'wfr_old_snapshot',
+        conversationId,
+        sessionId: session.id,
+        messageId: 'msg-old',
+        tool: 'read',
+        observedAt: 1
+      });
+      await appendEvent(session.id, toolCall('call-old', 'wfr_old_snapshot', 1));
+      await flushDurable(); // saved index contains only the old request
+      // Version 5 acknowledged owners before its debounced snapshot was necessarily current.
+      // Preserve that legacy shape so this test exercises the one-time migration scan rather
+      // than version 6's committed browser-ack boundary.
+      await writeDurableNow('request-correlations', {
+        version: 5,
+        entries: [{
+          requestId: 'wfr_old_snapshot', conversationId, sessionId: session.id,
+          messageId: 'msg-old', tool: 'read', observedAt: 1
+        }]
+      });
+
+      await appendEvent(session.id, toolCall('call-new', 'wfr_new_history', 2));
+      // Lose process memory before the debounced index write catches up. Session JSONL is
+      // already durable, so restore must merge it into the older valid snapshot.
+      resetCorrelationRegistryForTests();
+      resetDurableForTests();
+      initDurableStore(dir);
+
+      await restoreRequestCorrelations();
+      expect(requestCorrelation('wfr_old_snapshot')?.conversationId).toBe(conversationId);
+      expect(requestCorrelation('wfr_new_history')?.conversationId).toBe(conversationId);
+      // The migration scan publishes its result as the committed ledger before returning, so
+      // the next launch starts from it instead of scanning the same history again.
+      const migrated = await readDurable<{ version: number; complete?: boolean; entries: Array<{ requestId: string }> }>('request-correlations');
+      expect(migrated?.version).toBe(6);
+      expect(migrated?.complete).toBe(true);
+      expect(migrated?.entries.map((entry) => entry.requestId).sort()).toEqual(['wfr_new_history', 'wfr_old_snapshot']);
+    } finally {
+      resetCorrelationRegistryForTests();
+      resetSessionStoreForTests();
+      unsetSessionRootForTests();
+      resetDurableForTests();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * Every new owner reaches disk before the browser is told it was confirmed, so a complete
+   * version-6 ledger already holds every owner history could offer. Replaying recorded calls
+   * on each launch made opening the app wait on thousands of small session files.
+   */
+  it('trusts a complete version-6 ledger and scans history only when the ledger cannot vouch for itself', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'clf-correlation-complete-'));
+    const owner = (requestId: string, sessionId: string) => ({
+      requestId, conversationId: 'conv-complete', sessionId, messageId: `msg-${requestId}`, tool: 'read', observedAt: 1
+    });
+    try {
+      resetDurableForTests();
+      resetSessionStoreForTests();
+      initDurableStore(dir);
+      initSessionStore(dir);
+      const session = await createSession({ title: 'complete ledger', conversationId: 'conv-complete' });
+      await appendEvent(session.id, {
+        time: 2,
+        source: 'mcp',
+        kind: 'tool_call',
+        call: {
+          callId: 'call-history-only',
+          tool: 'read',
+          attribution: 'request_id',
+          requestId: 'wfr_history_only',
+          conversationId: 'conv-complete',
+          attributionMethod: 'request_id',
+          args: { text: '{}', truncated: false, chars: 2 },
+          result: { text: 'ok', truncated: false, chars: 2 },
+          outcome: 'ok',
+          durationMs: 1,
+          summary: { kind: 'read', tone: 'neutral', title: 'Read history' }
+        }
+      });
+
+      const ledgers = [
+        { scanned: false, value: { version: 6, complete: true, entries: [owner('wfr_committed', session.id)] } },
+        // Without the marker, or with a row this build cannot read, the snapshot does not prove
+        // it is the whole ledger, and recorded history remains the recovery source.
+        { scanned: true, value: { version: 6, entries: [owner('wfr_committed', session.id)] } },
+        { scanned: true, value: { version: 6, complete: true, entries: [owner('wfr_committed', session.id), { requestId: 'wfr_unreadable' }] } }
+      ];
+      for (const ledger of ledgers) {
+        await writeDurableNow('request-correlations', ledger.value);
+        resetCorrelationRegistryForTests();
+        await restoreRequestCorrelations();
+        expect(requestCorrelation('wfr_committed')?.conversationId).toBe('conv-complete');
+        expect(requestCorrelation('wfr_history_only')?.conversationId ?? null).toBe(ledger.scanned ? 'conv-complete' : null);
+      }
+    } finally {
+      resetCorrelationRegistryForTests();
+      resetSessionStoreForTests();
+      unsetSessionRootForTests();
+      resetDurableForTests();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});

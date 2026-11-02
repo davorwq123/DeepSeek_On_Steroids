@@ -1,0 +1,234 @@
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { promises as fs } from 'node:fs';
+
+const fake = vi.hoisted(() => {
+  type Listener = { fn: (...args: any[]) => void; once: boolean };
+  class Emitter {
+    private readonly listeners = new Map<string, Listener[]>();
+    on(event: string, fn: (...args: any[]) => void) {
+      const list = this.listeners.get(event) ?? [];
+      list.push({ fn, once: false });
+      this.listeners.set(event, list);
+      return this;
+    }
+    once(event: string, fn: (...args: any[]) => void) {
+      const list = this.listeners.get(event) ?? [];
+      list.push({ fn, once: true });
+      this.listeners.set(event, list);
+      return this;
+    }
+    emit(event: string, ...args: any[]) {
+      const list = [...(this.listeners.get(event) ?? [])];
+      this.listeners.set(
+        event,
+        (this.listeners.get(event) ?? []).filter((entry) => !entry.once)
+      );
+      for (const entry of list) entry.fn(...args);
+    }
+  }
+
+  const children: any[] = [];
+  const retirementReleases: Array<() => void> = [];
+
+  const spawn = vi.fn((_host: string, _args: string[], _options: { env: NodeJS.ProcessEnv }) => {
+    const index = children.length;
+    const child = new Emitter() as any;
+    child.pid = 9000 + index;
+    child.exitCode = null;
+    child.stdout = new Emitter();
+    child.stderr = new Emitter();
+    child.stdin = {
+      write(_line: string, _encoding: string, callback: (error?: Error | null) => void) {
+        child.writeCount = (child.writeCount ?? 0) + 1;
+        callback(null);
+        // The first helper deliberately hangs. A replacement helper answers normally.
+        if (index > 0) {
+          queueMicrotask(() => {
+            child.stdout.emit(
+              'data',
+              Buffer.from(
+                `${JSON.stringify({ ok: true, windows: [], screen: { x: 0, y: 0, width: 100, height: 100 } })}\n`
+              )
+            );
+            child.exitCode = 0;
+            child.emit('close');
+          });
+        }
+        return true;
+      },
+      end() {}
+    };
+    children.push(child);
+    queueMicrotask(() => child.emit('spawn'));
+    return child;
+  });
+
+  const terminate = async (pid: number) => {
+    const child = children.find((candidate) => candidate.pid === pid);
+    if (pid === 9000) await new Promise<void>((resolve) => retirementReleases.push(resolve));
+    if (child) {
+      child.exitCode = 0;
+      child.emit('close');
+    }
+  };
+  const terminateProcessTree = vi.fn(terminate);
+  const terminateProcess = vi.fn(terminate);
+
+  return {
+    children,
+    spawn,
+    terminateProcessTree,
+    terminateProcess,
+    releaseFirstRetirement: () => retirementReleases.shift()?.(),
+    reset: () => {
+      for (const release of retirementReleases.splice(0)) release();
+      children.splice(0);
+      spawn.mockClear();
+      terminateProcessTree.mockClear();
+      terminateProcess.mockClear();
+    }
+  };
+});
+
+vi.mock('node:child_process', () => ({ spawn: fake.spawn }));
+vi.mock('../src/main/env.js', () => ({
+  ensureUsablePath: vi.fn(),
+  normalizeEnvironment: (env: NodeJS.ProcessEnv) => ({ ...env }),
+  setEnvValue: (env: NodeJS.ProcessEnv, key: string, value: string) => {
+    env[key] = value;
+  }
+}));
+vi.mock('../src/main/exec.js', () => ({
+  findWindowsPowerShell: () => 'powershell.exe',
+  terminateProcessTree: fake.terminateProcessTree,
+  terminateProcess: fake.terminateProcess
+}));
+vi.mock('../src/main/logger.js', () => ({ logInfo: vi.fn(), logWarn: vi.fn() }));
+
+// The child process is mocked, but Darwin still resolves the native host before spawn.
+vi.stubEnv('COS_MACOS_DESKTOP_HELPER', process.execPath);
+
+import { listWindows, stopComputerHelper } from '../src/main/computer/index.js';
+
+/** Windows ends the helper alone (its children are apps launched for the person); elsewhere its tree. */
+const retirement = () => (process.platform === 'win32' ? fake.terminateProcess : fake.terminateProcessTree);
+
+afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+  fake.reset();
+});
+
+describe('desktop helper retirement ordering', () => {
+  it('does not reject a post-start process error until the broken helper is retired', async () => {
+    let firstSettled = false;
+    const first = listWindows();
+    const observed = first.then(
+      () => {
+        firstSettled = true;
+      },
+      () => {
+        firstSettled = true;
+      }
+    );
+    await vi.waitFor(() => expect(fake.children[0]?.writeCount).toBe(1));
+    let script: string | undefined;
+    if (process.platform !== 'darwin') {
+      const [, args, options] = fake.spawn.mock.calls[0]!;
+      expect(args).toEqual(expect.arrayContaining(['-ExecutionPolicy', 'Bypass', '-File']));
+      script = args[args.indexOf('-File') + 1]!;
+      expect((await fs.readFile(script, 'utf8')).startsWith('\uFEFF')).toBe(true);
+      expect(options.env['CLF_HELPER']).toBeUndefined();
+    }
+    fake.children[0]!.emit('error', new Error('pipe broke'));
+    await vi.waitFor(() => expect(retirement()).toHaveBeenCalledWith(9000));
+
+    expect(firstSettled).toBe(false);
+    const second = listWindows();
+    await Promise.resolve();
+    expect(fake.spawn).toHaveBeenCalledTimes(1);
+
+    fake.releaseFirstRetirement();
+    await expect(first).rejects.toThrow(/process error.*pipe broke/i);
+    await observed;
+    await expect(second).resolves.toEqual({ windows: [], screen: { x: 0, y: 0, width: 100, height: 100 } });
+    expect(fake.spawn).toHaveBeenCalledTimes(2);
+    if (script) await expect(fs.stat(script)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('does not release the queue or spawn a replacement until a timed-out helper is dead', async () => {
+    vi.useFakeTimers();
+
+    let firstSettled = false;
+    let firstError: unknown = null;
+    const first = listWindows();
+    const observedFirst = first.then(
+      () => {
+        firstSettled = true;
+      },
+      (error) => {
+        firstSettled = true;
+        firstError = error;
+      }
+    );
+    // Window metadata has its own short deadline; the 30s watchdog remains only the
+    // final boundary for unknown operations.
+    // The helper first materializes its script asynchronously; start the test clock
+    // from actual request admission rather than from the beginning of file I/O.
+    await vi.waitFor(() => expect(fake.children[0]?.writeCount).toBe(1));
+    await vi.advanceTimersByTimeAsync(15_000);
+    await Promise.resolve();
+    expect(retirement()).toHaveBeenCalledWith(9000);
+
+    expect(firstSettled).toBe(false);
+    const second = listWindows();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(fake.spawn).toHaveBeenCalledTimes(1);
+
+    fake.releaseFirstRetirement();
+    await observedFirst;
+    expect(firstError).toEqual(expect.objectContaining({ message: 'The desktop helper did not answer in time.' }));
+
+    await expect(second).resolves.toEqual({ windows: [], screen: { x: 0, y: 0, width: 100, height: 100 } });
+    expect(fake.spawn).toHaveBeenCalledTimes(2);
+  });
+
+  it('on Windows ends only the helper, so apps it launched for the person keep running', async () => {
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+    Object.defineProperty(process, 'platform', { ...platform, value: 'win32' });
+    try {
+      const first = listWindows();
+      const settled = first.catch(() => undefined);
+      await vi.waitFor(() => expect(fake.children[0]?.writeCount).toBe(1), { timeout: 5_000 });
+      fake.children[0]!.emit('error', new Error('pipe broke'));
+      await vi.waitFor(() => expect(fake.terminateProcess).toHaveBeenCalledWith(9000), { timeout: 5_000 });
+      fake.releaseFirstRetirement();
+      await settled;
+      expect(fake.terminateProcessTree).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(process, 'platform', platform);
+    }
+  });
+
+  it.runIf(process.platform !== 'darwin')('cancels startup before spawning if shutdown begins while the script is being written', async () => {
+    const original = fs.writeFile.bind(fs);
+    let release!: () => void;
+    let script = '';
+    const paused = new Promise<void>(resolve => { release = resolve; });
+    vi.spyOn(fs, 'writeFile').mockImplementationOnce(async (...args) => {
+      script = String(args[0]);
+      await original(...args);
+      await paused;
+    });
+    const starting = listWindows();
+    const rejected = expect(starting).rejects.toThrow(/shutting down/);
+    await vi.waitFor(() => expect(script).not.toBe(''));
+    const stopped = stopComputerHelper();
+    release();
+    await rejected;
+    await stopped;
+    expect(fake.spawn).not.toHaveBeenCalled();
+    await expect(fs.stat(script)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+});

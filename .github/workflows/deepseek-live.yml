@@ -1,0 +1,135 @@
+name: DeepSeek live smokes
+
+# Real DeepSeek pages, not a fixture: these send actual messages and spend real account usage, so
+# they never run for pull requests or ordinary pushes. They run daily on a dedicated self-hosted
+# runner and can be dispatched by hand:
+#   gh workflow run deepseek-live.yml
+#
+# Runner setup:
+#   - Register a runner with the `deepseek-live` label.
+#   - Install Node 22, bash (Git Bash on Windows) and a graphical session. A headless Linux
+#     runner also needs `xvfb-run`; the workflow uses it automatically when DISPLAY and
+#     WAYLAND_DISPLAY are both unset.
+#   - Sign in to DeepSeek once in the app's built-in browser and quit the app, leaving its
+#     user-data folder in place. The smokes copy that browser partition into a throwaway runtime;
+#     they never write to the live profile or upload its cookies.
+#   - If that folder is not at the platform default, set the repository variable
+#     COS_DEEPSEEK_PROFILE to its absolute user-data path (the one containing Partitions/).
+#     An explicit path must be the signed-in folder; the launcher fails rather than falling back
+#     to a different account.
+#
+# The runner can read the signed-in profile, so only reviewed code should run here. Scheduled runs
+# use the default branch; manually dispatched runs use the selected ref.
+on:
+  schedule:
+    # Daily, at an off-hour minute.
+    - cron: '43 4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A nightly run and a manual rerun must not copy the same browser profile at the same time.
+concurrency:
+  group: deepseek-live
+  cancel-in-progress: false
+
+jobs:
+  live:
+    name: Real DeepSeek page
+    runs-on: [self-hosted, deepseek-live]
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    env:
+      COS_DEEPSEEK_LIVE: '1'
+      # Empty means the launcher checks the platform default.
+      COS_DEEPSEEK_PROFILE: ${{ vars.COS_DEEPSEEK_PROFILE }}
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Clear previous live reports
+        id: cleanup
+        # A self-hosted workspace can survive a failed job. Never upload an older run's report as
+        # this run's evidence; checkout also cleans, but this is the artifact boundary itself.
+        run: |
+          set -euo pipefail
+          rm -rf outputs/deepseek-agents-live outputs/deepseek-chat-live
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Require the DeepSeek browser profile
+        run: node scripts/check-deepseek-live.mjs
+
+      - name: Build the app
+        run: npm run build
+
+      - name: Choose a display for the smoke
+        id: display
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_OS" = "Linux" ] && [ -z "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPLAY:-}" ]; then
+            if ! command -v xvfb-run >/dev/null 2>&1; then
+              echo "::error::This Linux runner has no display and no xvfb-run. Install xvfb or run the runner in a desktop session."
+              exit 1
+            fi
+            echo "launcher=xvfb-run -a" >> "$GITHUB_OUTPUT"
+          else
+            echo "launcher=" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Both run even when the first one fails, so one nightly report has both signals.
+      - name: Run the worker live smoke
+        id: worker
+        continue-on-error: true
+        timeout-minutes: 15
+        env:
+          LIVE_LAUNCHER: ${{ steps.display.outputs.launcher }}
+        run: |
+          set -euo pipefail
+          # Empty, or "xvfb-run -a", whose two arguments must split.
+          ${LIVE_LAUNCHER:-} npm run smoke:deepseek
+
+      - name: Run the ordinary-chat live smoke
+        id: chat
+        continue-on-error: true
+        timeout-minutes: 15
+        env:
+          LIVE_LAUNCHER: ${{ steps.display.outputs.launcher }}
+        run: |
+          set -euo pipefail
+          # Empty, or "xvfb-run -a", whose two arguments must split.
+          ${LIVE_LAUNCHER:-} npm run smoke:deepseek:chat
+
+      - name: Keep the live reports
+        # Only after the old reports were cleared: a checkout or cleanup failure must not upload a
+        # previous workspace as this run's evidence.
+        if: always() && steps.cleanup.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: deepseek-live-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            outputs/deepseek-agents-live/
+            outputs/deepseek-chat-live/
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Fail when a live smoke failed
+        if: always()
+        run: |
+          set -euo pipefail
+          echo "worker smoke: ${{ steps.worker.outcome }}"
+          echo "ordinary-chat smoke: ${{ steps.chat.outcome }}"
+          if [ "${{ steps.worker.outcome }}" != "success" ] || [ "${{ steps.chat.outcome }}" != "success" ]; then
+            exit 1
+          fi

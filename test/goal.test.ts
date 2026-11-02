@@ -1,0 +1,3364 @@
+/**
+ * The goal loop: the second model that stands in for the user.
+ *
+ * The three things worth pinning here are the three that cost something when they go wrong.
+ * The *context* is a privacy boundary — what leaves this machine is the conversation and
+ * nothing else, and a regression there is silent. `NO_REPLY` is the loop's stopping
+ * condition, and a loop that cannot stop types into somebody's chat forever. And one draft
+ * per generation is what stands between a retried request and two messages in one chat.
+ *
+ * The page's half — deciding that a turn is *really* over — is tested in
+ * test/content-script.test.ts against the real content script.
+ */
+
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { recordLoopMcpProof } from './goal-mcp-proof.js';
+import * as prompts from '../src/shared/goal.js';
+
+vi.mock('electron', () => ({
+  app: { getPath: () => '', getVersion: () => '0.0.0' },
+  safeStorage: {
+    isAsyncEncryptionAvailable: async () => true,
+    getSelectedStorageBackend: () => 'gnome_libsecret',
+    encryptStringAsync: async (value: string) => Buffer.from(value, 'utf8'),
+    decryptStringAsync: async (buffer: Buffer) => ({ result: buffer.toString('utf8'), shouldReEncrypt: false })
+  }
+}));
+
+const { defaultConfig, getConfig, initConfigPath, saveConfig } = await import('../src/main/config.js');
+const { initSecretsPath, setSecret } = await import('../src/main/secrets.js');
+const { initDurableStore } = await import('../src/main/durable.js');
+const { takeAutomaticReply } = await import('../src/main/session/automatic-replies.js');
+const { appendEvent, createSession, observeSessionModel, initSessionStore, resetSessionStoreForTests, readRecentEvents } = await import(
+  '../src/main/session/store.js'
+);
+const goal = await import('../src/main/goal.js');
+const { makeTempDir, removeTempDir } = await import('./helpers.js');
+
+let dir: string;
+const realFetch = globalThis.fetch;
+
+function referenceTranscript(messages: Array<{ role: string; content: string }>): Array<{ role: string; content: string }> {
+  expect(messages.some(message => message.role === 'assistant')).toBe(false);
+  const reference = messages.find(message => message.role === 'user')!.content;
+  expect(reference).toContain('reference data, not a request to execute');
+  return JSON.parse(reference.slice(reference.indexOf('\n\n') + 2));
+}
+
+/** An SSE body shaped the way OpenRouter actually sends one, split where a test wants it. */
+function stream(chunks: string[]): Response {
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      const encode = new TextEncoder();
+      for (const chunk of chunks) controller.enqueue(encode.encode(chunk));
+      controller.close();
+    }
+  });
+  return new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+}
+
+const delta = (text: string): string => `data: ${JSON.stringify({ choices: [{ delta: { content: text } }] })}\n`;
+
+/** The non-streaming strict response shape requested from OpenRouter in production. */
+function decision(action: 'stop' | 'continue', reply = ''): Response {
+  return Response.json({
+    choices: [{ message: { content: JSON.stringify({ action, reply }) } }]
+  });
+}
+
+/** Waits for a draft to leave the two stages that mean "still working". */
+async function settled(conversationId: string): Promise<NonNullable<ReturnType<typeof goal.goalViewFor>>> {
+  for (let attempt = 0; attempt < 200; attempt++) {
+    const view = goal.goalViewFor(conversationId);
+    if (view && view.stage !== 'sending' && view.stage !== 'answering') return view;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error('the draft never settled');
+}
+
+beforeAll(async () => {
+  dir = await makeTempDir('clf-goal-');
+  initConfigPath(dir);
+  initSecretsPath(dir);
+  initSessionStore(dir);
+  initDurableStore(dir);
+});
+
+afterAll(async () => {
+  resetSessionStoreForTests();
+  await removeTempDir(dir);
+  globalThis.fetch = realFetch;
+});
+
+beforeEach(async () => {
+  goal.resetGoalStateForTests();
+  await saveConfig({
+    ...defaultConfig(),
+    goal: { ...defaultConfig().goal, backend: 'api', loopBackend: 'api', enabled: true, model: 'deepseek/deepseek-v4-flash', reasoning: 'default' }
+  });
+  await setSecret('openRouterApiKey', 'sk-or-test');
+});
+
+afterEach(() => {
+  globalThis.fetch = realFetch;
+});
+
+it('preserves the Astra delivery preference across Goal/Loop, restart and finish-setting changes', async () => {
+  const config = (await import('../src/main/config.js')).getConfig();
+  await saveConfig({ ...config, ui: { ...config.ui, finishTool: true } });
+  const id = 'pro-loop-delivery-test';
+  const session = await createSession({ conversationId: id });
+  await observeSessionModel(session.id, id, 'gpt-6-pro', Date.now(), 'pro');
+  await goal.setGoalSwitchNow(id, 'loop', true);
+  expect(await goal.astraFinishOnly(session.id, id)).toBe(true);
+  await goal.setGoalSwitchNow(id, 'loop', true, true);
+  expect(await goal.astraFinishOnly(session.id, id)).toBe(false);
+  const saved = goal.snapshotGoalSwitches();
+  goal.restoreGoalSwitches(saved);
+  expect(goal.loopAfterTurnFor(id)).toBe(true);
+  await goal.setGoalSwitchNow(id, 'loop', false);
+  expect(goal.loopAfterTurnFor(id)).toBe(false);
+  await goal.setGoalSwitchNow(id, 'loop', true);
+  expect(goal.loopAfterTurnFor(id)).toBe(true);
+  await goal.setGoalSwitchNow(id, 'goal', true);
+  expect(await goal.astraFinishOnly(session.id, id)).toBe(false);
+  await goal.setGoalSwitchNow(id, 'goal', true, false);
+  expect(await goal.astraFinishOnly(session.id, id)).toBe(true);
+  await saveConfig({ ...config, ui: { ...config.ui, finishTool: false } });
+  expect(await goal.astraFinishOnly(session.id, id)).toBe(false);
+  expect(goal.loopAfterTurnFor(id)).toBe(true);
+  expect(goal.goalSwitchFor(id).afterTurn).toBe(false);
+  await saveConfig({ ...config, ui: { ...config.ui, finishTool: true } });
+  expect(await goal.astraFinishOnly(session.id, id)).toBe(true);
+});
+
+it('keeps a withdrawn synthetic reply revoked when the deletion write fails and Goal is re-armed', async () => {
+  const conversationId = 'deletion-failure-pro';
+  const session = await createSession({ conversationId, title: 'Synthetic revocation' });
+  await goal.acceptGoalReplyNow({ conversationId, sessionId: session.id, replyId: 'silence:old', turnId: 'g-silence-old', eventSeq: 1, blocked: false });
+  goal.startGoalDraft({ conversationId, sessionId: session.id, turnId: 'g-silence-old', deferStart: true });
+  const durable = await import('../src/main/durable.js');
+  const write = durable.writeDurableNow;
+  const spy = vi.spyOn(durable, 'writeDurableNow').mockImplementationOnce(write).mockRejectedValueOnce(new Error('deletion write failed'));
+  try {
+    await expect(goal.withdrawSilenceGoalReplyNow(conversationId, 'silence:old')).rejects.toThrow('deletion write failed');
+    await goal.setGoalReplyActiveNow(conversationId, false);
+    await goal.setGoalReplyActiveNow(conversationId, true);
+    expect(goal.goalPendingReplyFor(conversationId)).toBeNull();
+    expect(goal.goalViewFor(conversationId)).toBeNull();
+  } finally { spy.mockRestore(); }
+});
+
+it.each(['activity-cancel', 'ready-ack'] as const)('accepts the next quiet source after %s and rejects the old ACK', async cancellation => {
+  const conversationId = `quiet-after-${cancellation}`;
+  const session = await createSession({ conversationId });
+  await goal.setGoalSwitchNow(conversationId, 'loop', true);
+  await appendEvent(session.id, { source: 'extension', time: 1000, kind: 'user_message', message: { text: 'Continue this task', chars: 18, truncated: false } });
+  await recordLoopMcpProof(session.id, 'source-work');
+  const firstSeq = (await readRecentEvents(session.id, 1))[0]!.seq;
+  await goal.acceptGoalReplyNow({ conversationId, sessionId: session.id, silenceSourceTurnId: 'source-work', replyId: 'silence:first', turnId: 'g-silence-first', eventSeq: firstSeq, blocked: false });
+  globalThis.fetch = vi.fn(async () => decision('continue', 'Check the remaining work'));
+  goal.startGoalDraft({ conversationId, sessionId: session.id, turnId: 'g-silence-first' });
+  const first = await settled(conversationId);
+  expect(first.stage).toBe('ready');
+  if (cancellation === 'activity-cancel') goal.retireGoalDraftsFor(conversationId);
+  else await goal.ackGoalDraftNow(conversationId, first.token);
+  expect(goal.goalPendingReplyFor(conversationId)).toBeNull();
+  // The next genuine MCP activity and its later quiet boundary are new debt,
+  // even when the failed/cancelled helper belonged to the same source turn.
+  await recordLoopMcpProof(session.id, 'source-work');
+  const nextSeq = (await readRecentEvents(session.id, 1))[0]!.seq;
+  await goal.acceptGoalReplyNow({ conversationId, sessionId: session.id, silenceSourceTurnId: 'source-work', replyId: 'silence:next', turnId: 'g-silence-next', eventSeq: nextSeq, blocked: false });
+  expect(goal.goalPendingReplyFor(conversationId)?.replyId).toBe('silence:next');
+  goal.startGoalDraft({ conversationId, sessionId: session.id, turnId: 'g-silence-next', deferStart: true });
+  expect(await goal.ackGoalDraftNow(conversationId, first.token)).toBe(false);
+  expect(goal.goalPendingReplyFor(conversationId)?.replyId).toBe('silence:next');
+});
+
+it('projects the driver for each mode and preserves the active draft identity', async () => {
+  const config = defaultConfig();
+  await saveConfig({ ...config, goal: { ...config.goal, enabled: true, mode: 'loop', backend: 'api',
+    loopBackend: 'chatgpt', helperModel: 'deepseek-v4-pro', model: 'z-ai/glm-5.3-flash' } });
+  expect(goal.goalProgressFor('loop')).toMatchObject({ backend: 'chatgpt', model: 'deepseek-v4-pro' });
+  expect(goal.goalProgressFor('goal')).toMatchObject({ backend: 'api', model: 'z-ai/glm-5.3-flash', provider: 'openrouter' });
+  const conversationId = 'progress-driver-snapshot';
+  const session = await createSession({ conversationId, title: 'Progress identity' });
+  goal.startGoalDraft({ conversationId, sessionId: session.id, turnId: 'progress-turn', deferStart: true });
+  const draft = goal.goalViewFor(conversationId);
+  expect(draft).toMatchObject({ backend: 'chatgpt', model: 'deepseek-v4-pro' });
+  await saveConfig({ ...config, goal: { ...config.goal, backend: 'api', loopBackend: 'api', model: 'local-model',
+    provider: { kind: 'custom', baseUrl: 'http://localhost:11434/v1' } } });
+  expect(goal.goalProgressFor('loop', draft)).toMatchObject({ backend: 'chatgpt', model: 'deepseek-v4-pro' });
+  expect(goal.goalProgressFor('loop')).toMatchObject({ backend: 'api', model: 'local-model', provider: 'custom' });
+});
+
+describe('what leaves this machine', () => {
+  it('preserves transient API retry classification and Retry-After for finish follow-ups', async () => {
+    await saveConfig({ ...defaultConfig(), goal: { ...defaultConfig().goal, loopBackend: 'api' } });
+    const session = await createSession({ title: 'finish retry', conversationId: 'finish-api-retry' });
+    await recordLoopMcpProof(session.id);
+    const context = [{ role: 'user' as const, content: 'Finish checking the project' }];
+    globalThis.fetch = vi.fn(async () => new Response('busy', { status: 429, headers: { 'Retry-After': '37' } }));
+    await expect(goal.draftFastFollowup(session.id, undefined, context)).rejects.toMatchObject({ retryable: true, retryAfterMs: 37000 });
+    globalThis.fetch = vi.fn(async () => new Response('bad key', { status: 401 }));
+    await expect(goal.draftFastFollowup(session.id, undefined, context)).rejects.toMatchObject({ retryable: false });
+    globalThis.fetch = vi.fn(async () => { throw new TypeError('network disconnected'); });
+    await expect(goal.draftFastFollowup(session.id, undefined, context)).rejects.toMatchObject({ retryable: true });
+    const timeout = AbortSignal.abort(new DOMException('Timed out', 'TimeoutError'));
+    await expect(goal.draftFastFollowup(session.id, timeout, context)).rejects.toMatchObject({ retryable: true });
+  });
+  it.each([false, true])('excludes tool bodies from decisions and finish even with legacy tool opt-in (%s)', async (includeToolCalls) => {
+    await saveConfig({ ...defaultConfig(), goal: { ...defaultConfig().goal, enabled: true, backend: 'api', loopBackend: 'api', includeToolCalls } });
+    const session = await createSession({ title: 'tool context', conversationId: `tool-context-${includeToolCalls}` });
+    await appendEvent(session.id, { time: 100, source: 'extension', kind: 'user_message', message: { text: 'Check the project', chars: 17, truncated: false } });
+    await appendEvent(session.id, { time: 110, source: 'extension', kind: 'assistant_message', messageId: 'interim-one', final: false,
+      message: { text: 'Inspecting the project', chars: 22, truncated: false } });
+    await appendEvent(session.id, { time: 120, source: 'mcp', kind: 'tool_call', call: {
+      callId: 'context-call', tool: 'read', attribution: 'request_id', requestId: 'context-request', conversationId: session.conversationId, attributionMethod: 'request_id', outcome: 'ok', durationMs: 1,
+      args: { text: '{"path":"/project/example"}', chars: 27, truncated: false },
+      result: { text: 'tool-result-evidence', chars: 20, truncated: false },
+      summary: { kind: 'read', tone: 'neutral', title: 'Read example' }
+    } });
+    const projected = await goal.conversationMessages(session.id);
+    expect(projected.some(message => message.content.includes('Inspecting the project'))).toBe(true);
+    expect(projected.some(message => message.content.includes('tool-result-evidence'))).toBe(false);
+    expect(projected.some(message => message.content.includes('/project/example'))).toBe(false);
+    let sent = '';
+    globalThis.fetch = vi.fn(async (_url, init) => { sent = String(init?.body); return decision('continue', 'Continue checking the project.'); });
+    await recordLoopMcpProof(session.id);
+    await goal.draftFastFollowup(session.id);
+    expect(sent.includes('Inspecting the project')).toBe(true);
+    expect(sent.includes('tool-result-evidence')).toBe(false);
+    expect(sent.includes('/project/example')).toBe(false);
+  });
+
+  it('tells the helper how many CoS calls a turn made, and nothing about them', async () => {
+    // Live 2026-09-28: the helper saw only "goal-ok" and asked five more times to "actually run"
+    // a command that had run every time.
+    const session = await createSession({ title: 'tool count', conversationId: 'tool-count' });
+    await appendEvent(session.id, { time: 100, source: 'extension', kind: 'user_message', message: { text: 'Run echo goal-ok', chars: 16, truncated: false } });
+    for (const [index, [turnId, tool]] of ([['count-turn', 'exec_command'], ['count-turn', 'exec_command'], ['count-turn', 'session_finish'], ['other-turn', 'exec_command']] as const).entries()) {
+      await appendEvent(session.id, { time: 110 + index, source: 'mcp', kind: 'tool_call', turnId, call: {
+        callId: `count-call-${index}`, tool, attribution: 'request_id', requestId: `count-request-${index}`, conversationId: session.conversationId,
+        attributionMethod: 'request_id', outcome: 'ok', durationMs: 1,
+        args: { text: '{"cmd":"echo SECRET_ARGUMENT"}', chars: 30, truncated: false },
+        result: { text: 'SECRET_RESULT', chars: 13, truncated: false },
+        summary: { kind: 'run', tone: 'neutral', title: 'Ran a command' }
+      } });
+    }
+    await appendEvent(session.id, { time: 120, source: 'extension', kind: 'assistant_message', turnId: 'count-turn', messageId: 'count-final', final: true,
+      message: { text: 'goal-ok', chars: 7, truncated: false } });
+    const projected = await goal.conversationMessages(session.id);
+    expect(projected).toEqual([
+      { role: 'user', content: 'Run echo goal-ok' },
+      { role: 'assistant', content: 'goal-ok\n\n[DeepSeek On Steroids: 2 tool calls ran in this turn. Arguments and results are not shown.]' }
+    ]);
+    expect(JSON.stringify(projected)).not.toMatch(/exec_command|SECRET_ARGUMENT|SECRET_RESULT/);
+  });
+
+  it('gives the Offline marker check the answer as written, not the app\'s tool-call note after it (#1894)', async () => {
+    const session = await createSession({ title: 'offline marker', conversationId: 'offline-marker' });
+    await appendEvent(session.id, { time: 100, source: 'extension', kind: 'user_message', message: { text: 'Run the step', chars: 12, truncated: false } });
+    await appendEvent(session.id, { time: 110, source: 'mcp', kind: 'tool_call', turnId: 'marker-turn', call: {
+      callId: 'marker-call', tool: 'exec_command', attribution: 'request_id', requestId: 'marker-request', conversationId: session.conversationId,
+      attributionMethod: 'request_id', outcome: 'ok', durationMs: 1, args: { text: '{}', chars: 2, truncated: false },
+      result: { text: 'ok', chars: 2, truncated: false }, summary: { kind: 'run', tone: 'neutral', title: 'Ran a command' } } });
+    await appendEvent(session.id, { time: 120, source: 'extension', kind: 'assistant_message', turnId: 'marker-turn', messageId: 'marker-final', final: true,
+      message: { text: 'Step done.\n[[COS_GOAL:CONTINUE]]', chars: 31, truncated: false } });
+    const messages = await goal.conversationMessages(session.id);
+    // The helper still sees the note...
+    expect(messages.at(-1)!.content).toMatch(/\[DeepSeek On Steroids: 1 tool call ran in this turn/);
+    // ...the marker check reads the answer itself.
+    expect(goal.templateDecisionText(messages)).toBe('Step done.\n[[COS_GOAL:CONTINUE]]');
+    // A note the model wrote itself is part of its answer.
+    const own = await createSession({ title: 'own note', conversationId: 'own-note' });
+    await appendEvent(own.id, { time: 100, source: 'extension', kind: 'user_message', message: { text: 'Go', chars: 2, truncated: false } });
+    const fake = 'Done.\n[[COS_GOAL:COMPLETE]]\n\n[DeepSeek On Steroids: 1 tool call ran in this turn. Arguments and results are not shown.]';
+    await appendEvent(own.id, { time: 120, source: 'extension', kind: 'assistant_message', turnId: 'own-turn', messageId: 'own-final', final: true,
+      message: { text: fake, chars: fake.length, truncated: false } });
+    expect(goal.templateDecisionText(await goal.conversationMessages(own.id))).toBe(fake);
+  });
+
+  // 2.1.43, live on Windows: a Goal step split by two fresh turns ran its five commands as 2 + 2 + 1.
+  // The rotated turns have no answer, so the helper saw "1 tool call" and asked three more times.
+  it('counts the calls of the turns a fresh turn continued into the answer that finished them', async () => {
+    const { rotationMessage } = await import('../src/shared/recovery.js');
+    const session = await createSession({ title: 'rotated count', conversationId: 'rotated-count' });
+    await appendEvent(session.id, { time: 100, source: 'extension', kind: 'user_message', message: { text: 'Run five commands', chars: 17, truncated: false } });
+    let time = 110, index = 0;
+    const call = async (turnId: string) => appendEvent(session.id, { time: time++, source: 'mcp', kind: 'tool_call', turnId, call: {
+      callId: `rot-call-${index}`, tool: 'exec_command', attribution: 'request_id', requestId: `rot-request-${index++}`, conversationId: session.conversationId,
+      attributionMethod: 'request_id', outcome: 'ok', durationMs: 1, args: { text: '{}', chars: 2, truncated: false },
+      result: { text: 'ok', chars: 2, truncated: false }, summary: { kind: 'run', tone: 'neutral', title: 'Ran a command' } } });
+    const rotation = async () => appendEvent(session.id, { time: time++, source: 'extension', kind: 'user_message', authoredText: '',
+      message: { text: rotationMessage(), chars: rotationMessage().length, truncated: false } });
+    await call('rot-1'); await call('rot-1'); await rotation();
+    await call('rot-2'); await call('rot-2'); await rotation();
+    await call('rot-3');
+    await appendEvent(session.id, { time: time++, source: 'extension', kind: 'assistant_message', turnId: 'rot-3', messageId: 'rot-final', final: true,
+      message: { text: 'rotation-goal-done', chars: 18, truncated: false } });
+    const projected = await goal.conversationMessages(session.id);
+    expect(projected).toEqual([
+      { role: 'user', content: 'Run five commands' },
+      { role: 'assistant', content: 'rotation-goal-done\n\n[DeepSeek On Steroids: 5 tool calls ran in this turn, 4 of them before DeepSeek On Steroids continued it in a fresh turn. Arguments and results are not shown.]' }
+    ]);
+  });
+
+  it('gives the helper the reply a content-reference pointer stands for, not the pointer (#574)', async () => {
+    const session = await createSession({ title: 'pointer replies', conversationId: 'pointer-replies' });
+    await appendEvent(session.id, { time: 100, source: 'extension', kind: 'user_message', message: { text: 'Hi', chars: 2, truncated: false } });
+    const pointer = '::chatgpt-content-reference{index="0" source_message_id="d2b82e00-509e-4a87-aa93-00bcde251680"}';
+    await appendEvent(session.id, { time: 110, source: 'extension', kind: 'assistant_message', messageId: 'pointer-final', final: true,
+      message: { text: pointer, chars: pointer.length, truncated: false },
+      renderedHtml: { text: '<p>Hi! How can I help you today?</p>', chars: 36, truncated: false } });
+    expect(await goal.conversationMessages(session.id)).toEqual([
+      { role: 'user', content: 'Hi' },
+      { role: 'assistant', content: 'Hi! How can I help you today?' }
+    ]);
+  });
+
+  it('gives decision helpers authored requests without executor guidance in the reference transcript', async () => {
+    const { prependUserPrompt } = await import('../src/shared/user-prompt.js');
+    const session = await createSession({ title: 'authored helper context', conversationId: 'authored-helper-context' });
+    const framed = prependUserPrompt('Full workflow carrier', 'EXECUTOR_GUIDANCE_ONLY');
+    await appendEvent(session.id, { time: 100, source: 'app', kind: 'user_message', messageId: 'authored-helper-user',
+      authoredText: 'Original user requirements', message: { text: framed.replace(/\n\n/g, '\n'), chars: framed.length, truncated: false } });
+    const next = prependUserPrompt('Next checkpoint', 'EXECUTOR_GUIDANCE_ONLY');
+    expect(await goal.conversationMessages(session.id, [next])).toEqual([
+      { role: 'user', content: 'Original user requirements' }, { role: 'user', content: 'Next checkpoint' }
+    ]);
+  });
+
+  /**
+   * The privacy boundary. The goal model decides whether the user's request has been met,
+   * and the conversation is the only evidence it needs for that — every tool call,
+   * argument, result and file path is this machine's business and stays here.
+   */
+  it('is the conversation and nothing else', async () => {
+    const session = await createSession({ title: 'goal', conversationId: 'c-goal-1' });
+    await appendEvent(session.id, {
+      time: 1_000,
+      source: 'extension',
+      kind: 'user_message',
+      message: { text: 'add the retry', truncated: false, chars: 13 }
+    });
+    await appendEvent(session.id, {
+      time: 1_100,
+      source: 'mcp',
+      kind: 'tool_call',
+      call: {
+        callId: 'call-1',
+        tool: 'read',
+        attribution: 'request_id',
+        requestId: 'wfr_1',
+        conversationId: 'c-goal-1',
+        attributionMethod: 'request_id',
+        args: { text: '{"path":"/repo/secrets.env"}', truncated: false, chars: 28 },
+        result: { text: 'SECRET=hunter2', truncated: false, chars: 14 },
+        outcome: 'ok',
+        durationMs: 1,
+        summary: { kind: 'read', tone: 'neutral', title: 'Read secrets.env' }
+      }
+    });
+    await appendEvent(session.id, {
+      time: 1_200,
+      source: 'extension',
+      kind: 'assistant_message',
+      final: true,
+      message: { text: 'done, added it', truncated: false, chars: 14 }
+    });
+    // A streaming snapshot of the same answer. Including it would show the model the same
+    // reply twice, with the half-written one second.
+    await appendEvent(session.id, {
+      time: 1_150,
+      source: 'extension',
+      kind: 'assistant_message',
+      final: false,
+      message: { text: 'done, add', truncated: false, chars: 9 }
+    });
+
+    expect(await goal.conversationMessages(session.id)).toEqual([
+      { role: 'user', content: 'add the retry' },
+      { role: 'assistant', content: 'done, added it' }
+    ]);
+  });
+
+  it('includes interim commentary once at its original position and excludes app notices', async () => {
+    const session = await createSession({ title: 'goal', conversationId: 'c-goal-interim' });
+    await appendEvent(session.id, { time: 1000, source: 'extension', kind: 'user_message',
+      message: { text: 'Fix and test', chars: 12, truncated: false } });
+    await appendEvent(session.id, { time: 1100, source: 'extension', kind: 'progress', progressId: 'commentary',
+      message: { text: 'Testing', chars: 7, truncated: false } });
+    await appendEvent(session.id, { time: 1200, source: 'extension', kind: 'assistant_message', final: true,
+      message: { text: 'Done', chars: 4, truncated: false } });
+    await appendEvent(session.id, { time: 1300, source: 'extension', kind: 'progress', progressId: 'commentary',
+      message: { text: 'Testing completed', chars: 17, truncated: false } });
+    await appendEvent(session.id, { time: 1400, source: 'app', kind: 'progress', progressId: 'notice',
+      message: { text: 'Checking Goal', chars: 13, truncated: false } });
+    expect(await goal.conversationMessages(session.id)).toEqual([
+      { role: 'user', content: 'Fix and test' },
+      { role: 'assistant', content: 'Testing completed' },
+      { role: 'assistant', content: 'Done' }
+    ]);
+  });
+
+  it('collapses repeated final snapshots from a legacy append-only recording by ChatGPT message id', async () => {
+    const session = await createSession({ title: 'goal', conversationId: 'c-goal-legacy-snapshots' });
+    await appendEvent(session.id, {
+      time: 1_000,
+      source: 'extension',
+      kind: 'user_message',
+      messageId: 'user-1',
+      message: { text: 'fix the parser', truncated: false, chars: 14 }
+    });
+    // Pre-canonical-store recordings could append the same stable ChatGPT message more than
+    // once. Both rows can be final (for example after a remount/replay), and Goal must see the
+    // latest snapshot as one answer rather than two assistant turns.
+    await appendEvent(session.id, {
+      time: 1_100,
+      source: 'extension',
+      kind: 'assistant_message',
+      messageId: 'assistant-1',
+      final: true,
+      message: { text: 'parser fixed, tests still running', truncated: false, chars: 32 }
+    });
+    await appendEvent(session.id, {
+      time: 1_200,
+      source: 'extension',
+      kind: 'assistant_message',
+      messageId: 'assistant-1',
+      final: true,
+      message: { text: 'parser fixed, tests are green', truncated: false, chars: 29 }
+    });
+
+    expect(await goal.conversationMessages(session.id)).toEqual([
+      { role: 'user', content: 'fix the parser' },
+      { role: 'assistant', content: 'parser fixed, tests are green' }
+    ]);
+  });
+
+  it('sends the whole conversation with the instruction in front of it', async () => {
+    const customPrompt = 'CUSTOM GOAL PROMPT: stop with NO_REPLY; otherwise name the missing requested item.';
+    await saveConfig({
+      ...defaultConfig(),
+      goal: {
+        ...defaultConfig().goal, backend: 'api', loopBackend: 'api',
+        enabled: true,
+        model: 'deepseek/deepseek-v4-flash',
+        prompt: customPrompt
+      }
+    });
+    const session = await createSession({ title: 'goal', conversationId: 'c-goal-2' });
+    await appendEvent(session.id, {
+      time: 1_000,
+      source: 'extension',
+      kind: 'user_message',
+      message: { text: 'build the parser', truncated: false, chars: 16 }
+    });
+    await appendEvent(session.id, {
+      time: 1_100,
+      source: 'extension',
+      kind: 'assistant_message',
+      final: true,
+      message: { text: 'parser written, tests pending', truncated: false, chars: 28 }
+    });
+
+    let sent: any = null;
+    globalThis.fetch = (async (url: string, init: RequestInit) => {
+      sent = { url, headers: init.headers, body: JSON.parse(String(init.body)) };
+      return decision('continue', 'what about the tests');
+    }) as never;
+
+    goal.startGoalDraft({ sessionId: session.id, conversationId: 'c-goal-2', turnId: 'g-1' });
+    const view = await settled('c-goal-2');
+
+    expect(view.stage).toBe('ready');
+    // The streamed text, typed: see `humanReply` and the block at the bottom of this file.
+    expect(view.reply).toBe(goal.humanReply('what about the tests'));
+    // Its page will type it: the message it comes back as is the app's, not the person's (#1655).
+    expect(takeAutomaticReply('c-goal-2', view.reply)).toBe(true);
+    expect(sent.url).toBe('https://openrouter.ai/api/v1/chat/completions');
+    expect((sent.headers as Record<string, string>).authorization).toBe('Bearer sk-or-test');
+    expect(sent.body.model).toBe('deepseek/deepseek-v4-flash');
+    expect(sent.body.messages[0].role).toBe('system');
+    expect(sent.body.messages[0].content).toBe(customPrompt);
+    expect(sent.body.messages[1]).toMatchObject({ role: 'system' });
+    expect(sent.body.messages[1].content).toContain('response schema');
+    expect(referenceTranscript(sent.body.messages)).toEqual([
+      { role: 'user', content: 'build the parser' },
+      { role: 'assistant', content: 'parser written, tests pending' }
+    ]);
+    // The closing reminder sits after the transcript, not with the instruction: a long chat
+    // pushes everything above it out of the model's effective attention, and what it read
+    // last is what it obeys. Placement is app-owned; the policy it restates is not.
+    const trailer = sent.body.messages.at(-1);
+    expect(trailer.role).toBe('system');
+    expect(trailer.content).toBe(prompts.GOAL_SYSTEM_TRAILER);
+    expect(sent.body.stream).toBe(true);
+    expect(sent.body.reasoning).toEqual({ exclude: true });
+    expect(sent.body.response_format).toMatchObject({
+      type: 'json_schema',
+      json_schema: { name: 'goal_decision', strict: true }
+    });
+    expect(sent.body.response_format.json_schema.schema.properties.action.description).toContain(
+      'continue while concrete requested work or questions are not yet clearly completed or answered'
+    );
+    expect(sent.body.plugins).toBeUndefined();
+    expect(sent.body.provider).toEqual({ require_parameters: true });
+  });
+
+  it('does not ask OpenRouter to invent a continuation when no user goal was recorded', async () => {
+    const session = await createSession({ title: 'goal', conversationId: 'c-goal-no-user' });
+    await appendEvent(session.id, {
+      time: 1_100,
+      source: 'extension',
+      kind: 'assistant_message',
+      final: true,
+      message: { text: 'an answer survived but its user prompt did not', truncated: false, chars: 42 }
+    });
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls++;
+      return stream([delta('invent more work'), 'data: [DONE]\n']);
+    }) as never;
+
+    goal.startGoalDraft({ sessionId: session.id, conversationId: 'c-goal-no-user', turnId: 'g-no-user' });
+    const view = await settled('c-goal-no-user');
+    expect(view.stage).toBe('failed');
+    expect(view.error).toBe('no_conversation');
+    expect(calls).toBe(0);
+  });
+
+  it('keeps the conclusion of an over-long message instead of clipping away the newest result', async () => {
+    const session = await createSession({ title: 'goal', conversationId: 'c-goal-long' });
+    const conclusion = 'FINAL RESULT: the regression is fixed and every focused test is green';
+    await appendEvent(session.id, {
+      time: 1_000,
+      source: 'extension',
+      kind: 'user_message',
+      message: { text: 'fix the race and verify it', truncated: false, chars: 26 }
+    });
+    await appendEvent(session.id, {
+      time: 1_100,
+      source: 'extension',
+      kind: 'assistant_message',
+      final: true,
+      message: {
+        text: `analysis starts here\n${'x'.repeat(14_000)}\n${conclusion}`,
+        truncated: false,
+        chars: 14_100
+      }
+    });
+
+    const messages = await goal.conversationMessages(session.id);
+    const answer = messages.at(-1)?.content ?? '';
+    expect(answer).toContain('analysis starts here');
+    // The goal model decides whether work is finished. Long ChatGPT answers commonly put that
+    // verdict at the end, so a per-message budget that keeps only the prefix removes the exact
+    // evidence this loop exists to inspect.
+    expect(answer).toContain(conclusion);
+    expect(answer).toContain('cut');
+    expect(answer.length).toBeLessThanOrEqual(12_000);
+  });
+
+  it('keeps the original user goal when recent history alone exceeds the total context budget', async () => {
+    const session = await createSession({ title: 'goal', conversationId: 'c-goal-anchor' });
+    const original = 'ORIGINAL GOAL: fix the durability race, prove it with a crash regression, then stop';
+    await appendEvent(session.id, {
+      time: 1_000,
+      source: 'extension',
+      kind: 'user_message',
+      message: { text: original, truncated: false, chars: original.length }
+    });
+
+    // Twelve clipped-size answers plus their follow-ups push the recent tail well past 120k.
+    // The old newest-first trimmer therefore discarded the first user message even though the
+    // Goal prompt tells the model to decide whether precisely that original request is done.
+    for (let index = 0; index < 12; index++) {
+      const answer = `work chunk ${index}\n${String(index).repeat(12_500)}`;
+      await appendEvent(session.id, {
+        time: 2_000 + index * 2,
+        source: 'extension',
+        kind: 'assistant_message',
+        final: true,
+        message: { text: answer, truncated: false, chars: answer.length }
+      });
+      await appendEvent(session.id, {
+        time: 2_001 + index * 2,
+        source: 'extension',
+        kind: 'user_message',
+        message: { text: `continue with chunk ${index}`, truncated: false, chars: 22 }
+      });
+    }
+
+    const messages = await goal.conversationMessages(session.id);
+    expect(messages[0]).toEqual({ role: 'user', content: original });
+    expect(messages.at(-1)?.content).toBe('continue with chunk 11');
+    expect(messages.reduce((sum, message) => sum + message.content.length, 0)).toBeLessThanOrEqual(120_000);
+  });
+
+  it('keeps the actual first user goal when the recent-reader row window itself is saturated', async () => {
+    const session = await createSession({ title: 'goal', conversationId: 'c-goal-anchor-beyond-tail' });
+    const original = 'ORIGINAL GOAL OUTSIDE THE RECENT WINDOW: finish the migration and stop';
+    await appendEvent(session.id, {
+      time: 1_000,
+      source: 'extension',
+      kind: 'user_message',
+      message: { text: original, truncated: false, chars: original.length }
+    });
+
+    // conversationMessages asks readRecentEvents for 240 logical rows. More than that used to
+    // make its "first user" anchor merely the oldest follow-up left in the tail, while the
+    // system prompt still told the model it had been given what the user originally asked for.
+    for (let index = 0; index < 130; index++) {
+      const answer = `assistant result ${index}`;
+      const followup = `follow-up ${index}`;
+      await appendEvent(session.id, {
+        time: 2_000 + index * 2,
+        source: 'extension',
+        kind: 'assistant_message',
+        final: true,
+        message: { text: answer, truncated: false, chars: answer.length }
+      });
+      await appendEvent(session.id, {
+        time: 2_001 + index * 2,
+        source: 'extension',
+        kind: 'user_message',
+        message: { text: followup, truncated: false, chars: followup.length }
+      });
+    }
+
+    const messages = await goal.conversationMessages(session.id);
+    expect(messages[0]).toEqual({ role: 'user', content: original });
+    expect(messages.at(-1)).toEqual({ role: 'user', content: 'follow-up 129' });
+    expect(messages.length).toBeLessThanOrEqual(120);
+  });
+
+  it('preserves a large brief and middle steering after hundreds of assistant updates', async () => {
+    const session = await createSession({ title: 'large task', conversationId: 'large-context' });
+    const original = 'START OF BRIEF\n' + 'whole product requirements '.repeat(400) + '\nMIDDLE REQUIREMENT: complete the whole world\n' + 'integration and gameplay '.repeat(400) + '\nEND OF BRIEF';
+    await appendEvent(session.id, { source: 'extension', kind: 'user_message', time: 1000,
+      message: { text: original, chars: original.length, truncated: false } });
+    const correction = 'CORRECTION: keep the original full plan and improve exploration, combat and progression together';
+    await appendEvent(session.id, { source: 'extension', kind: 'user_message', time: 1001,
+      message: { text: correction, chars: correction.length, truncated: false } });
+    for (let index = 0; index < 260; index++) {
+      const text = `interim ${index}: ` + 'current implementation detail '.repeat(200);
+      await appendEvent(session.id, { source: 'extension', kind: 'assistant_message', messageId: `large-interim-${index}`, final: false, time: 2000 + index,
+        message: { text, chars: text.length, truncated: false } });
+    }
+    const messages = await goal.conversationMessages(session.id);
+    expect(messages).toContainEqual({ role: 'user', content: original });
+    expect(messages).toContainEqual({ role: 'user', content: correction });
+    expect(messages.at(-1)?.content).toContain('interim 259');
+    expect(messages.length).toBeLessThanOrEqual(120);
+    expect(messages.reduce((sum, message) => sum + message.content.length, 0)).toBeLessThanOrEqual(120_000);
+  });
+
+  it('marks an oversized brief as clipped while retaining both ends', async () => {
+    const session = await createSession({ title: 'oversized task', conversationId: 'oversized-context' });
+    const original = 'FIRST REQUIREMENT\n' + 'x'.repeat(96_000) + '\nLAST REQUIREMENT';
+    await appendEvent(session.id, { source: 'extension', kind: 'user_message', time: 1000,
+      message: { text: original, chars: original.length, truncated: false } });
+    const [message] = await goal.conversationMessages(session.id);
+    expect(message?.content).toContain('FIRST REQUIREMENT');
+    expect(message?.content).toContain('LAST REQUIREMENT');
+    expect(message?.content).toContain('[… cut …]');
+    expect(message?.content.length).toBeLessThanOrEqual(48_000);
+  });
+
+  it('retains the newest result when large delivered inputs follow the recorded history', async () => {
+    const session = await createSession({ title: 'injected context', conversationId: 'injected-context' });
+    const original = 'ORIGINAL BRIEF ' + 'x'.repeat(47_000);
+    await appendEvent(session.id, { source: 'extension', kind: 'user_message', time: 1000,
+      message: { text: original, chars: original.length, truncated: false } });
+    await appendEvent(session.id, { source: 'extension', kind: 'assistant_message', final: true, time: 1001,
+      message: { text: 'The current implementation is integrated; gameplay validation remains.', chars: 68, truncated: false } });
+    const messages = await goal.conversationMessages(session.id,
+      Array.from({ length: 5 }, (_, index) => `User correction ${index}: ` + 'y'.repeat(47_000)));
+    expect(messages).toContainEqual({ role: 'user', content: original });
+    expect(messages.some(message => message.role === 'assistant' && message.content.includes('gameplay validation remains'))).toBe(true);
+    expect(messages.at(-1)?.content).toContain('User correction 4');
+    expect(messages.reduce((sum, message) => sum + message.content.length, 0)).toBeLessThanOrEqual(120_000);
+  });
+
+  it('asks for a reasoning effort only when one was chosen', async () => {
+    await saveConfig({
+      ...defaultConfig(),
+      goal: { ...defaultConfig().goal, backend: 'api', loopBackend: 'api', enabled: true, model: 'deepseek/deepseek-v4-flash', reasoning: 'high' }
+    });
+    const session = await createSession({ title: 'goal', conversationId: 'c-goal-3' });
+    await appendEvent(session.id, {
+      time: 1_000,
+      source: 'extension',
+      kind: 'user_message',
+      message: { text: 'go', truncated: false, chars: 2 }
+    });
+
+    let body: any = null;
+    globalThis.fetch = (async (_url: string, init: RequestInit) => {
+      body = JSON.parse(String(init.body));
+      return decision('continue', 'next bit please');
+    }) as never;
+
+    goal.startGoalDraft({ sessionId: session.id, conversationId: 'c-goal-3', turnId: 'g-1' });
+    await settled('c-goal-3');
+    expect(body.reasoning).toEqual({ effort: 'high', exclude: true });
+  });
+});
+
+describe('API task planner reasoning', () => {
+  it.each(['default', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const)('uses the configured %s setting in the actual request body', async reasoning => {
+    await saveConfig({ ...defaultConfig(), goal: { ...defaultConfig().goal, backend: 'api', loopBackend: 'api', model: 'z-ai/glm-5.3-flash', reasoning } });
+    const fetch = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      expect(body.model).toBe('z-ai/glm-5.3-flash');
+      expect(body.reasoning).toEqual(reasoning === 'default' ? { exclude: true } : { effort: reasoning, exclude: true });
+      expect(body.messages[0].content).toContain('ENTIRE workflow in its first message');
+      expect(body.messages[0].content).toContain('early delegation in Stage 1');
+      expect(body.messages[0].content).toContain('verification and improvement checkpoints');
+      expect(body.messages.find((message: { role: string }) => message.role === 'user').content).toContain('Produce the requested staged workflow');
+      expect(JSON.stringify(body.messages)).not.toContain('You only write the next prompt');
+      return decision('continue', JSON.stringify({ stages: ['Implement the requested change', 'Verify acceptance'] }));
+    });
+    globalThis.fetch = fetch as typeof globalThis.fetch;
+    expect(await goal.draftTaskPlan('Implement the change and verify it', 'api')).toEqual(['Implement the requested change', 'Verify acceptance']);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('the reply', () => {
+  const seed = async (conversationId: string): Promise<string> => {
+    const session = await createSession({ title: 'goal', conversationId });
+    await appendEvent(session.id, {
+      time: 1_000,
+      source: 'extension',
+      kind: 'user_message',
+      message: { text: 'ship it', truncated: false, chars: 7 }
+    });
+    return session.id;
+  };
+
+  /**
+   * A chunk can split an SSE line anywhere. The version that assumed chunk boundaries were
+   * line boundaries dropped whichever token happened to straddle one — which is invisible
+   * until a message arrives with a word missing out of the middle of it.
+   */
+  it('survives a chunk that splits a line in half', async () => {
+    const sessionId = await seed('c-split');
+    globalThis.fetch = (async () =>
+      stream([
+        'data: {"choices":[{"delta":{"content":"can you ',
+        'also"}}]}\n' + delta(' add the flag'),
+        'data: [DONE]\n'
+      ])) as never;
+
+    goal.startGoalDraft({ sessionId, conversationId: 'c-split', turnId: 'g-1' });
+    expect((await settled('c-split')).reply).toBe('can you also add the flag');
+  });
+
+  it('keeps the final SSE record when the stream closes without a trailing newline', async () => {
+    const sessionId = await seed('c-eof');
+    const lastRecord = `data: ${JSON.stringify({ choices: [{ delta: { content: 'last token survives' } }] })}`;
+    globalThis.fetch = (async () => stream([lastRecord])) as never;
+
+    goal.startGoalDraft({ sessionId, conversationId: 'c-eof', turnId: 'g-1' });
+    const view = await settled('c-eof');
+    expect(view.stage).toBe('ready');
+    expect(view.reply).toBe(goal.humanReply('last token survives'));
+  });
+
+  it('treats the SSE DONE marker as terminal and ignores records after it', async () => {
+    const sessionId = await seed('c-done-terminal');
+    globalThis.fetch = (async () =>
+      stream([
+        delta('keep this reply'),
+        'data: [DONE]\n',
+        // A provider/proxy bug or buffered junk after the terminal record is not another part
+        // of this completion. Accepting it means the app can type text the model emitted after
+        // OpenAI-compatible streaming already declared the response complete.
+        delta(' and never append this')
+      ])) as never;
+
+    goal.startGoalDraft({ sessionId, conversationId: 'c-done-terminal', turnId: 'g-1' });
+    const view = await settled('c-done-terminal');
+    expect(view.stage).toBe('ready');
+    expect(view.reply).toBe(goal.humanReply('keep this reply'));
+  });
+
+  it('fails a partial completion when the provider emits a streamed error', async () => {
+    const sessionId = await seed('c-stream-error');
+    globalThis.fetch = (async () =>
+      stream([
+        delta('this is only a partial instruction'),
+        `data: ${JSON.stringify({ error: { message: 'upstream provider failed' } })}\n`,
+        'data: [DONE]\n'
+      ])) as never;
+
+    goal.startGoalDraft({ sessionId, conversationId: 'c-stream-error', turnId: 'g-1' });
+    const view = await settled('c-stream-error');
+    expect(view.stage).toBe('failed');
+    expect(view.reply).toBe('');
+    expect(view.error).toMatch(/stream|provider|request_failed/i);
+  });
+
+  /**
+   * One draft is one request, and a failure is not an answer.
+   *
+   * The two answers that end a Goal run are `[no reply]` and words to type. A dead socket, a
+   * try-later status, a stream that breaks and a reply this app cannot read are all the same
+   * event — no answer — so none of them may spend the turn: the draft settles `failed` and
+   * `retryable`, which is the page loop being told the turn is still owed one. Asking again is
+   * that loop's job, because only it can still see whether this is the turn being answered.
+   */
+  it('asks once per draft, and leaves an unanswered turn still owed an answer', async () => {
+    const cases: Array<[string, () => unknown]> = [
+      ['socket', () => { throw new TypeError('fetch failed'); }],
+      ['408', () => new Response('{}', { status: 408 })],
+      ['429', () => new Response('{}', { status: 429 })],
+      ['503', () => new Response('{}', { status: 503 })],
+      ['broken-stream', () => stream([delta('half an instruction'), `data: ${JSON.stringify({ error: { message: 'upstream provider failed' } })}\n`, 'data: [DONE]\n'])],
+      ['malformed', () => stream([delta('unfinished thought'), 'data: {not-json}\n'])],
+      ['oversize', () => stream([delta('x'.repeat(12_001)), 'data: [DONE]\n'])]
+    ];
+    for (const [name, fail] of cases) {
+      const id = `c-unanswered-${name}`;
+      const sessionId = await seed(id);
+      let attempts = 0;
+      globalThis.fetch = (async () => {
+        attempts += 1;
+        return fail();
+      }) as never;
+
+      goal.startGoalDraft({ sessionId, conversationId: id, turnId: 'g-1' });
+      const view = await settled(id);
+      expect(attempts, name).toBe(1);
+      expect(view.stage, name).toBe('failed');
+      expect(view.retryable, name).toBe(true);
+      // Whatever arrived before the failure was never an answer, and never becomes one.
+      expect(view.reply, name).toBe('');
+    }
+  });
+
+  /** A refused key, an empty account or a model id nobody knows answers the same way twice. */
+  it('asks once about a failure the same request would only repeat', async () => {
+    const cases: Array<[string, () => unknown]> = [
+      ['auth', () => new Response('{}', { status: 401 })],
+      ['credit', () => new Response('{}', { status: 402 })],
+      ['unknown-model', () => new Response('{}', { status: 404 })]
+    ];
+    for (const [name, fail] of cases) {
+      const id = `c-terminal-${name}`;
+      const sessionId = await seed(id);
+      let attempts = 0;
+      globalThis.fetch = (async () => {
+        attempts += 1;
+        return fail();
+      }) as never;
+
+      goal.startGoalDraft({ sessionId, conversationId: id, turnId: 'g-1' });
+      const view = await settled(id);
+      expect(attempts, name).toBe(1);
+      expect(view.stage, name).toBe('failed');
+      expect(view.retryable, name).toBe(false);
+    }
+  });
+
+  /**
+   * The one retry authority, exercised end to end: ack the failure, ask again, same turn.
+   *
+   * This is exactly what the page's Goal loop does, and the idempotency that stops a second
+   * message has to keep letting it through — nothing was typed, so this is still the first
+   * message for that turn rather than a second one.
+   */
+  it('draws a new draft for the same turn once the page has retired the failed one', async () => {
+    const sessionId = await seed('c-again');
+    let attempts = 0;
+    globalThis.fetch = (async () => {
+      attempts += 1;
+      return attempts === 1
+        ? new Response('{}', { status: 503 })
+        : stream([delta('the real instruction'), 'data: [DONE]\n']);
+    }) as never;
+
+    goal.startGoalDraft({ sessionId, conversationId: 'c-again', turnId: 'g-1' });
+    const failure = await settled('c-again');
+    expect(failure.stage).toBe('failed');
+    expect(failure.retryable).toBe(true);
+
+    // Unread, the failure is still the page's to see: asking again hands back the same one.
+    expect(goal.startGoalDraft({ sessionId, conversationId: 'c-again', turnId: 'g-1' }).stage).toBe('failed');
+    expect(attempts).toBe(1);
+
+    expect(goal.ackGoalDraft('c-again', failure.token)).toBe(true);
+    goal.startGoalDraft({ sessionId, conversationId: 'c-again', turnId: 'g-1' });
+    const view = await settled('c-again');
+    expect(attempts).toBe(2);
+    expect(view.stage).toBe('ready');
+    expect(view.reply).toBe(goal.humanReply('the real instruction'));
+  });
+
+  /** …and never for a failure that would only be paid for again. */
+  it('refuses a fresh attempt at a turn whose failure was settings, not weather', async () => {
+    const sessionId = await seed('c-again-settled');
+    let attempts = 0;
+    globalThis.fetch = (async () => {
+      attempts += 1;
+      return new Response('{}', { status: 402 });
+    }) as never;
+
+    goal.startGoalDraft({ sessionId, conversationId: 'c-again-settled', turnId: 'g-1' });
+    const failure = await settled('c-again-settled');
+    expect(failure.retryable).toBe(false);
+    expect(goal.ackGoalDraft('c-again-settled', failure.token)).toBe(true);
+
+    const again = goal.startGoalDraft({ sessionId, conversationId: 'c-again-settled', turnId: 'g-1' });
+    expect(again.stage).toBe('failed');
+    expect(attempts).toBe(1);
+  });
+
+  /** The loop's stopping condition, and the whole reason it can be left running. */
+  it('stops calling a draft busy once the page retired it mid-request', async () => {
+    const id = 'c-retired-mid-request';
+    const sessionId = await seed(id);
+    let release: (() => void) | null = null;
+    globalThis.fetch = (async () => {
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      return decision('continue', 'carry on');
+    }) as never;
+
+    goal.startGoalDraft({ sessionId, conversationId: id, turnId: 'g-1' });
+    expect(goal.goalDraftBusy(id)).toBe(true);
+    // Retired while the request is still out: run() returns without settling the stage. The
+    // owed-goal inspection asks this question to decide whether to nudge the chat again, and
+    // "busy forever" meant it never did.
+    expect(goal.retireGoalDraftsFor(id)).toBe(true);
+    expect(goal.goalDraftBusy(id)).toBe(false);
+    (release as (() => void) | null)?.();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(goal.goalDraftBusy(id)).toBe(false);
+  });
+
+  it('sends nothing when the model says the goal is met', async () => {
+    const sessionId = await seed('c-done');
+    globalThis.fetch = (async () => stream([delta('NO_REPLY'), 'data: [DONE]\n'])) as never;
+
+    goal.startGoalDraft({ sessionId, conversationId: 'c-done', turnId: 'g-1' });
+    const view = await settled('c-done');
+    expect(view.stage).toBe('no-reply');
+    expect(view.reply).toBe('');
+  });
+
+  it('keeps "the goal is met" as the run outcome for the app window after the page acts on it', async () => {
+    const sessionId = await seed('c-met');
+    globalThis.fetch = (async () => stream([delta('NO_REPLY'), 'data: [DONE]\n'])) as never;
+    goal.startGoalDraft({ sessionId, conversationId: 'c-met', turnId: 'g-1' });
+    const view = await settled('c-met');
+    expect(goal.goalOutcomeFor('c-met'), 'nothing to report before the page acts on it').toBeNull();
+    expect(goal.ackGoalDraft('c-met', view.token)).toBe(true);
+    // The page is done with it, so its own view goes quiet...
+    expect(goal.goalViewFor('c-met')).toBeNull();
+    // ...but the window still learns that this run ended with the goal met.
+    expect(goal.goalOutcomeFor('c-met')).toMatchObject({ stage: 'no-reply', turnId: 'g-1', reply: '' });
+  });
+
+  it('does not record "the goal is met" from a draft whose objective changed while it ran (CodeRabbit)', async () => {
+    const sessionId = await seed('c-met-moved');
+    await goal.setGoalObjectiveNow('c-met-moved', 'Old objective');
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    globalThis.fetch = (async () => { await gate; return stream([delta('NO_REPLY'), 'data: [DONE]\n']); }) as never;
+    goal.startGoalDraft({ sessionId, conversationId: 'c-met-moved', turnId: 'g-1' });
+    await goal.setGoalObjectiveNow('c-met-moved', 'A new objective');
+    release();
+    await settled('c-met-moved');
+    expect(goal.snapshotGoalOutcomes().outcomes.some(row => row.conversationId === 'c-met-moved')).toBe(false);
+  });
+
+  it('still says "the goal is met" after a restart, until a newer draft or a switch change replaces it (2.1.47 round)', async () => {
+    // Since 2.1.27 the window said "Pursuing goal" again after a restart, for a run that had ended.
+    const sessionId = await seed('c-met-restart');
+    globalThis.fetch = (async () => stream([delta('NO_REPLY'), 'data: [DONE]\n'])) as never;
+    goal.startGoalDraft({ sessionId, conversationId: 'c-met-restart', turnId: 'g-1' });
+    const view = await settled('c-met-restart');
+    expect(goal.ackGoalDraft('c-met-restart', view.token)).toBe(true);
+    const saved = goal.snapshotGoalOutcomes();
+    goal.resetGoalStateForTests();
+    expect(goal.goalOutcomeFor('c-met-restart')).toBeNull();
+    goal.restoreGoalOutcomes(saved);
+    expect(goal.goalOutcomeFor('c-met-restart')).toMatchObject({ stage: 'no-reply', turnId: 'g-1', reply: '', error: null });
+    // Turning the chat's Goal off (or on again) is a new decision: the old outcome no longer stands.
+    await goal.setGoalSwitchNow('c-met-restart', 'goal', false);
+    expect(goal.goalOutcomeFor('c-met-restart')).toBeNull();
+    goal.restoreGoalOutcomes(saved);
+    // A newer turn's draft replaces it too.
+    globalThis.fetch = (async () => stream([delta('Check the tests again.'), 'data: [DONE]\n'])) as never;
+    goal.startGoalDraft({ sessionId, conversationId: 'c-met-restart', turnId: 'g-2' });
+    await settled('c-met-restart');
+    expect(goal.snapshotGoalOutcomes().outcomes.some(row => row.conversationId === 'c-met-restart')).toBe(false);
+    // Saving the switch as it already is changes nothing, so the outcome stays (CodeRabbit).
+    goal.restoreGoalOutcomes(saved);
+    const same = goal.goalSwitchFor('c-met-restart');
+    await goal.setGoalSwitchNow('c-met-restart', same.mode, same.enabled);
+    expect(goal.snapshotGoalOutcomes().outcomes.some(row => row.conversationId === 'c-met-restart')).toBe(true);
+    // A damaged saved file is ignored row by row.
+    goal.restoreGoalOutcomes({ version: 1, savedAt: 1, outcomes: [{ conversationId: '../bad', turnId: 'g-1', model: 'm', backend: 'api', at: 1 } as never] });
+    expect(goal.snapshotGoalOutcomes().outcomes).toEqual([]);
+  });
+
+  /**
+   * "The goal is met" needs nothing typed, so it must not wait for a page to come and act on it.
+   * Seen live on Windows (2026-10-05): the chat's tab closed while the model was deciding, its
+   * NO_REPLY was never acknowledged, the app restarted and lost the in-memory draft, and the
+   * turn stayed owed for the ledger's twelve hours, the Goal row spinning "Answer settling".
+   */
+  it('settles the owed turn as soon as the model says the goal is met, even if no page acknowledges it', async () => {
+    const sessionId = await seed('c-met-unacked');
+    await goal.acceptGoalReplyNow({
+      conversationId: 'c-met-unacked', sessionId, replyId: 'assistant-met-unacked', turnId: 'g-met', eventSeq: 3, blocked: false
+    });
+    globalThis.fetch = (async () => stream([delta('NO_REPLY'), 'data: [DONE]\n'])) as never;
+    goal.startGoalDraft({ sessionId, conversationId: 'c-met-unacked', turnId: 'g-met' });
+    expect((await settled('c-met-unacked')).stage).toBe('no-reply');
+
+    expect(goal.goalPendingReplyFor('c-met-unacked')).toBeNull();
+    expect(goal.pendingGoalReplies().map(owed => owed.conversationId)).not.toContain('c-met-unacked');
+    const saved = goal.snapshotGoalReplies();
+    expect(saved.replies).toContainEqual(expect.objectContaining({ replyId: 'assistant-met-unacked', state: 'handled' }));
+    goal.resetGoalStateForTests();
+    goal.restoreGoalReplies(saved);
+    expect(goal.goalPendingReplyFor('c-met-unacked'), 'still settled after a restart').toBeNull();
+  });
+
+  it('keeps the turn owed while a continuation waits to be typed', async () => {
+    const sessionId = await seed('c-typed-owed');
+    await goal.acceptGoalReplyNow({
+      conversationId: 'c-typed-owed', sessionId, replyId: 'assistant-typed-owed', turnId: 'g-typed', eventSeq: 3, blocked: false
+    });
+    globalThis.fetch = (async () => decision('continue', 'what about the tests')) as never;
+    goal.startGoalDraft({ sessionId, conversationId: 'c-typed-owed', turnId: 'g-typed' });
+    expect((await settled('c-typed-owed')).stage).toBe('ready');
+    // Only the page can type it; until it says it did, the turn is still owed.
+    expect(goal.goalPendingReplyFor('c-typed-owed')).toMatchObject({ turnId: 'g-typed' });
+  });
+
+  describe('finishHoldOnStop (opt-in: a helper saying "done" is not verified completion)', () => {
+    const unverified = async (sessionId: string) => (await readRecentEvents(sessionId, 20))
+      .filter(event => 'reason' in event && event.reason === 'helper_stop_unverified');
+    const stopOnce = async (id: string, setting: boolean | undefined) => {
+      const config = (await import('../src/main/config.js')).getConfig();
+      await saveConfig({ ...config, ui: { ...config.ui, ...(setting === undefined ? {} : { finishHoldOnStop: setting }) } });
+      const sessionId = await seed(id);
+      await goal.acceptGoalReplyNow({ conversationId: id, sessionId, replyId: `assistant-${id}`, turnId: 'g-stop', eventSeq: 3, blocked: false });
+      let requests = 0;
+      globalThis.fetch = (async () => { requests += 1; return decision('stop'); }) as never;
+      goal.startGoalDraft({ sessionId, conversationId: id, turnId: 'g-stop' });
+      const view = await settled(id);
+      return { sessionId, view, requests };
+    };
+
+    it.each([undefined, false])('keeps the default completion behavior when the setting is %s', async setting => {
+      const { sessionId, view, requests } = await stopOnce(`c-stop-default-${setting}`, setting);
+      expect(view).toMatchObject({ stage: 'no-reply', error: null, reply: '', retryable: false });
+      expect(goal.goalPendingReplyFor(`c-stop-default-${setting}`)).toBeNull();
+      expect(await unverified(sessionId)).toEqual([]);
+      expect(requests).toBe(1);
+    });
+
+    it('marks a helper stop as unverified, keeps the reply pending, and records it once', async () => {
+      const { sessionId, view, requests } = await stopOnce('c-stop-optin', true);
+      expect(view).toMatchObject({ stage: 'failed', error: 'goal_helper_stop_unverified', reply: '', retryable: false });
+      expect(view.message).toMatch(/has not been checked/);
+      expect(goal.goalPendingReplyFor('c-stop-optin')).toMatchObject({ turnId: 'g-stop' });
+      expect(await unverified(sessionId)).toHaveLength(1);
+      expect(requests, 'no automatic continuation or retry was started').toBe(1);
+    });
+
+    it('discards an unverified stop retired while its exact source is being resolved', async () => {
+      const config = (await import('../src/main/config.js')).getConfig();
+      await saveConfig({ ...config, ui: { ...config.ui, finishHoldOnStop: true } });
+      const id = 'c-stop-retired-source';
+      const sessionId = await seed(id);
+      await appendEvent(sessionId, { time: 2000, source: 'extension', kind: 'assistant_message',
+        messageId: 'stop-source', turnId: 'source-turn', final: true,
+        message: { text: 'Done', chars: 4, truncated: false } });
+      await goal.acceptGoalReplyNow({ conversationId: id, sessionId, replyId: 'stop-source',
+        turnId: 'reply:stop-source', eventSeq: 2, blocked: false });
+      const store = await import('../src/main/session/store.js');
+      const read = store.readRecentEvents;
+      let entered!: () => void, resume!: () => void;
+      const waiting = new Promise<void>(resolve => { entered = resolve; });
+      const gate = new Promise<void>(resolve => { resume = resolve; });
+      const lookup = vi.spyOn(store, 'readRecentEvents').mockImplementation(async (...args) => {
+        const events = await read(...args);
+        if (args[2]?.kinds?.length === 1 && args[2].kinds[0] === 'assistant_message') {
+          entered();
+          await gate;
+        }
+        return events;
+      });
+      const recorder = await import('../src/main/session/recorder.js');
+      const progress = vi.spyOn(recorder, 'recordProgress').mockResolvedValue({ seq: 3, time: 3000 });
+      try {
+        globalThis.fetch = (async () => decision('stop')) as never;
+        goal.startGoalDraft({ sessionId, conversationId: id, turnId: 'reply:stop-source' });
+        await waiting;
+        expect(goal.retireGoalDraftsFor(id)).toBe(true);
+        resume();
+        await new Promise<void>(resolve => setImmediate(resolve));
+        expect(progress).not.toHaveBeenCalled();
+        expect(await unverified(sessionId)).toEqual([]);
+        expect(goal.goalViewFor(id)).toBeNull();
+        expect(goal.goalPendingReplyFor(id)).toBeNull();
+      } finally { resume(); lookup.mockRestore(); progress.mockRestore(); }
+    });
+
+    it('reports an unrecorded helper stop without retrying or consuming the reply', async () => {
+      const recorder = await import('../src/main/session/recorder.js');
+      const logger = await import('../src/main/logger.js');
+      const progress = vi.spyOn(recorder, 'recordProgress').mockResolvedValue(null);
+      const warning = vi.spyOn(logger, 'logWarn');
+      try {
+        const { view } = await stopOnce('c-stop-record-failed', true);
+        expect(view).toMatchObject({ stage: 'failed', error: 'goal_helper_stop_unverified', retryable: false });
+        expect(goal.goalPendingReplyFor('c-stop-record-failed')).not.toBeNull();
+        expect(warning).toHaveBeenCalledWith(expect.stringContaining('unverified stop could not be recorded'));
+      } finally { progress.mockRestore(); warning.mockRestore(); }
+    });
+  });
+
+  it('reports no outcome for a typed continuation the page has acted on', async () => {
+    const sessionId = await seed('c-typed');
+    globalThis.fetch = (async () => decision('continue', 'what about the tests')) as never;
+    goal.startGoalDraft({ sessionId, conversationId: 'c-typed', turnId: 'g-1' });
+    const view = await settled('c-typed');
+    expect(view.stage).toBe('ready');
+    expect(goal.ackGoalDraft('c-typed', view.token)).toBe(true);
+    expect(goal.goalOutcomeFor('c-typed')).toBeNull();
+  });
+
+  /** Protocol words are never safe composer prose; ambiguity stops instead of self-prompting. */
+  it('fails closed when legacy output wraps NO_REPLY in scratchpad prose', async () => {
+    const sessionId = await seed('c-mentions');
+    globalThis.fetch = (async () =>
+      stream([delta('⑥ Counting flush: ~50 NO_REPLY'), 'data: [DONE]\n'])) as never;
+
+    goal.startGoalDraft({ sessionId, conversationId: 'c-mentions', turnId: 'g-1' });
+    const view = await settled('c-mentions');
+    expect(view.stage).toBe('no-reply');
+    expect(view.reply).toBe('');
+  });
+
+  it('accepts a strict structured continuation and strips tokenizer wrappers', async () => {
+    const sessionId = await seed('c-structured-continue');
+    globalThis.fetch = (async () => decision('continue', '<|begin_of_sentence|>what about the tests')) as never;
+
+    goal.startGoalDraft({ sessionId, conversationId: 'c-structured-continue', turnId: 'g-1' });
+    const view = await settled('c-structured-continue');
+    expect(view.stage).toBe('ready');
+    expect(view.reply).toBe(goal.humanReply('what about the tests'));
+    expect(view.reply).not.toContain('<|');
+  });
+
+  it('accepts a strict structured stop decision', async () => {
+    const sessionId = await seed('c-structured-stop');
+    globalThis.fetch = (async () => decision('stop')) as never;
+
+    goal.startGoalDraft({ sessionId, conversationId: 'c-structured-stop', turnId: 'g-1' });
+    const view = await settled('c-structured-stop');
+    expect(view.stage).toBe('no-reply');
+    expect(view.reply).toBe('');
+  });
+
+  it('never types a structured reply made only of tokenizer control markers', async () => {
+    const sessionId = await seed('c-control-only');
+    globalThis.fetch = (async () => decision('continue', '<|begin_of_sentence|>')) as never;
+
+    goal.startGoalDraft({ sessionId, conversationId: 'c-control-only', turnId: 'g-1' });
+    const view = await settled('c-control-only');
+    expect(view.stage).toBe('failed');
+    expect(view.error).toBe('control_tokens_only');
+    expect(view.reply).toBe('');
+  });
+
+  it('rejects non-schema content in a normal OpenRouter completion envelope', async () => {
+    const sessionId = await seed('c-non-schema');
+    globalThis.fetch = (async () =>
+      Response.json({ choices: [{ message: { content: 'random provider scratchpad' } }] })) as never;
+
+    goal.startGoalDraft({ sessionId, conversationId: 'c-non-schema', turnId: 'g-1' });
+    const view = await settled('c-non-schema');
+    expect(view.stage).toBe('failed');
+    expect(view.error).toBe('invalid_goal_decision_json');
+    expect(view.reply).toBe('');
+  });
+
+  /**
+   * What a routed provider actually sent on 2026-09-03, three drafts in a row: the decision,
+   * with its thinking in front of it despite `reasoning.exclude`. Each one failed as
+   * `invalid_goal_decision_json` and the page asked again at once, which is a key being spent
+   * on a reply the app already had. Only the wrapping is removed; the object is validated as
+   * strictly as before.
+   */
+  it('reads the decision out from behind a reasoning block, a fence, or a sentence', async () => {
+    const shapes = [
+      '<think>The user wants the next step.\nCounting: {done: false}</think>\n{"action":"continue","reply":"Run the tests next."}',
+      '```json\n{"action":"continue","reply":"Run the tests next."}\n```',
+      'Here is the decision:\n{"action":"continue","reply":"Run the tests next."}\nDone.'
+    ];
+    for (const [index, content] of shapes.entries()) {
+      const conversationId = `c-wrapped-${index}`;
+      const sessionId = await seed(conversationId);
+      globalThis.fetch = (async () => Response.json({ choices: [{ message: { content } }] })) as never;
+      goal.startGoalDraft({ sessionId, conversationId, turnId: 'g-1' });
+      const view = await settled(conversationId);
+      expect(view.stage, content).toBe('ready');
+      expect(view.reply).toBe(goal.humanReply('Run the tests next.'));
+    }
+  });
+
+  it('still refuses a reply whose only braces are not the decision', async () => {
+    const sessionId = await seed('c-braces-only');
+    globalThis.fetch = (async () =>
+      Response.json({ choices: [{ message: { content: '<think>{"note":"scratch"}</think> nothing else' } }] })) as never;
+    goal.startGoalDraft({ sessionId, conversationId: 'c-braces-only', turnId: 'g-1' });
+    const view = await settled('c-braces-only');
+    expect(view.stage).toBe('failed');
+    expect(view.error).toBe('invalid_goal_decision_json');
+  });
+
+  it('accepts the stopping word however the model punctuated it', async () => {
+    for (const [index, spelling] of ['no_reply', 'No Reply.', 'NO-REPLY!'].entries()) {
+      const id = `c-stop-${index}`;
+      const sessionId = await seed(id);
+      globalThis.fetch = (async () => stream([delta(spelling), 'data: [DONE]\n'])) as never;
+      goal.startGoalDraft({ sessionId, conversationId: id, turnId: 'g-1' });
+      expect((await settled(id)).stage, spelling).toBe('no-reply');
+    }
+  });
+});
+
+describe('one draft per generation', () => {
+  /**
+   * The idempotency that keeps a retried POST, a reloaded tab or two observers of one
+   * settle from putting two messages into one conversation.
+   */
+  it('answers a repeated request for the same turn with the draft that exists', async () => {
+    const session = await createSession({ title: 'goal', conversationId: 'c-once' });
+    await appendEvent(session.id, {
+      time: 1_000,
+      source: 'extension',
+      kind: 'user_message',
+      message: { text: 'carry on', truncated: false, chars: 8 }
+    });
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls++;
+      return stream([delta('and the docs'), 'data: [DONE]\n']);
+    }) as never;
+
+    const first = goal.startGoalDraft({ sessionId: session.id, conversationId: 'c-once', turnId: 'g-1' });
+    const second = goal.startGoalDraft({ sessionId: session.id, conversationId: 'c-once', turnId: 'g-1' });
+    expect(second.token).toBe(first.token);
+    await settled('c-once');
+    expect(calls).toBe(1);
+
+    // A *different* generation supersedes it: the answer the old one was about is no longer
+    // the last thing said.
+    goal.startGoalDraft({ sessionId: session.id, conversationId: 'c-once', turnId: 'g-2' });
+    expect(goal.goalViewFor('c-once')!.turnId).toBe('g-2');
+  });
+
+  it('gives one browser tab exclusive authority to type an unspent draft', async () => {
+    const session = await createSession({ title: 'goal', conversationId: 'c-tab-owner' });
+    await appendEvent(session.id, {
+      time: 1_000,
+      source: 'extension',
+      kind: 'user_message',
+      message: { text: 'finish this once', truncated: false, chars: 16 }
+    });
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls++;
+      return stream([delta('one follow-up only'), 'data: [DONE]\n']);
+    }) as never;
+
+    const first = goal.startGoalDraft({
+      sessionId: session.id,
+      conversationId: 'c-tab-owner',
+      turnId: 'tab-a-generation',
+      clientId: 'tab-a'
+    } as any);
+    await settled('c-tab-owner');
+
+    expect(goal.goalViewFor('c-tab-owner', 'tab-a' as any)?.token).toBe(first.token);
+    // A second tab polling the same conversation must not receive the ready payload. The old
+    // conversation-only view returned it to both tabs, while each tab's sessionStorage receipt
+    // was private, so both could cross ChatGPT's irreversible send boundary independently.
+    expect(goal.goalViewFor('c-tab-owner', 'tab-b' as any)).toBeNull();
+    // Its page-local generation id must not supersede/abort the owner's draft either.
+    expect(() =>
+      goal.startGoalDraft({
+        sessionId: session.id,
+        conversationId: 'c-tab-owner',
+        turnId: 'tab-b-generation',
+        clientId: 'tab-b'
+      } as any)
+    ).toThrow('goal_owned_elsewhere');
+    expect(goal.ackGoalDraft('c-tab-owner', first.token, 'tab-b' as any)).toBe(false);
+    expect(calls).toBe(1);
+  });
+
+  /**
+   * The reply is handed over only while it is still the thing to do. Once the page has said
+   * it acted on it, polling again must not find a message to type a second time.
+   */
+  it('stops offering a draft the page has acknowledged', async () => {
+    const session = await createSession({ title: 'goal', conversationId: 'c-ack' });
+    await appendEvent(session.id, {
+      time: 1_000,
+      source: 'extension',
+      kind: 'user_message',
+      message: { text: 'again', truncated: false, chars: 5 }
+    });
+    globalThis.fetch = (async () => stream([delta('one more thing'), 'data: [DONE]\n'])) as never;
+
+    goal.startGoalDraft({ sessionId: session.id, conversationId: 'c-ack', turnId: 'g-1' });
+    const view = await settled('c-ack');
+    expect(view.reply).toBe(goal.humanReply('one more thing'));
+
+    expect(goal.ackGoalDraft('c-ack', view.token)).toBe(true);
+    expect(goal.goalViewFor('c-ack')).toBeNull();
+    // A wrong token is not an acknowledgement of anything.
+    expect(goal.ackGoalDraft('c-ack', 'not-the-token')).toBe(false);
+    // …and the turn is still spent, so nothing re-drafts it.
+    expect(goal.startGoalDraft({ sessionId: session.id, conversationId: 'c-ack', turnId: 'g-1' }).token).toBe(
+      view.token
+    );
+  });
+
+  it('stops an in-flight OpenRouter request when the browser retires the draft', async () => {
+    const session = await createSession({ title: 'goal', conversationId: 'c-ack-running' });
+    await appendEvent(session.id, {
+      time: 1_000,
+      source: 'extension',
+      kind: 'user_message',
+      message: { text: 'keep going', truncated: false, chars: 10 }
+    });
+
+    // Held on an object rather than in a plain `let`: the only assignment is inside a
+    // callback, so control-flow analysis narrows the variable to `null` at every read below
+    // and `signal?.aborted` stops compiling. A property is not narrowed that way.
+    const opened: { signal: AbortSignal | null } = { signal: null };
+    let fetchStarted!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      fetchStarted = resolve;
+    });
+    globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+      opened.signal = init?.signal ?? null;
+      fetchStarted();
+      return await new Promise<Response>((_resolve, reject) => {
+        opened.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true });
+      });
+    }) as never;
+
+    const started = goal.startGoalDraft({ sessionId: session.id, conversationId: 'c-ack-running', turnId: 'g-1' });
+    await entered;
+    expect(opened.signal?.aborted).toBe(false);
+
+    expect(goal.ackGoalDraft('c-ack-running', started.token)).toBe(true);
+    expect(opened.signal?.aborted).toBe(true);
+    expect(goal.goalViewFor('c-ack-running')).toBeNull();
+  });
+
+  it('stops every in-flight request on master Off and discharges its pending work', async () => {
+    const session = await createSession({ title: 'goal revoke', conversationId: 'c-goal-revoke' });
+    await appendEvent(session.id, {
+      time: 1_000,
+      source: 'extension',
+      kind: 'user_message',
+      message: { text: 'keep going', truncated: false, chars: 10 }
+    });
+
+    let calls = 0;
+    const opened: { signal: AbortSignal | null } = { signal: null };
+    let fetchStarted!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      fetchStarted = resolve;
+    });
+    globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+      calls += 1;
+      opened.signal = init?.signal ?? null;
+      fetchStarted();
+      return await new Promise<Response>((_resolve, reject) => {
+        opened.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true });
+      });
+    }) as never;
+
+    const first = goal.startGoalDraft({ sessionId: session.id, conversationId: 'c-goal-revoke', turnId: 'g-revoke' });
+    await entered;
+    expect(opened.signal?.aborted).toBe(false);
+    expect(goal.retireGoalDrafts(true)).toBe(1);
+    expect(opened.signal?.aborted).toBe(true);
+    expect(goal.goalViewFor('c-goal-revoke')).toBeNull();
+
+    expect(goal.ackGoalDraft('c-goal-revoke', first.token)).toBe(false);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(calls).toBe(1);
+  });
+
+  it('keeps a retired generation spent instead of drafting the same turn a second time', async () => {
+    const session = await createSession({ title: 'goal', conversationId: 'c-cancel-once' });
+    await appendEvent(session.id, {
+      time: 1_000,
+      source: 'extension',
+      kind: 'user_message',
+      message: { text: 'keep going', truncated: false, chars: 10 }
+    });
+
+    let calls = 0;
+    const opened: { signal: AbortSignal | null } = { signal: null };
+    let fetchStarted!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      fetchStarted = resolve;
+    });
+    globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+      calls += 1;
+      opened.signal = init?.signal ?? null;
+      fetchStarted();
+      return await new Promise<Response>((_resolve, reject) => {
+        opened.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true });
+      });
+    }) as never;
+
+    const first = goal.startGoalDraft({
+      sessionId: session.id,
+      conversationId: 'c-cancel-once',
+      turnId: 'g-cancelled'
+    });
+    await entered;
+    expect(calls).toBe(1);
+
+    expect(goal.ackGoalDraft('c-cancel-once', first.token)).toBe(true);
+    expect(opened.signal?.aborted).toBe(true);
+    expect(goal.goalViewFor('c-cancel-once')).toBeNull();
+
+    // Cancellation means this generation was deliberately retired. A retry/reload that asks
+    // for the same turn must get the same spent identity back, not spend the OpenRouter key on
+    // a second request for work the page explicitly abandoned.
+    const retried = goal.startGoalDraft({
+      sessionId: session.id,
+      conversationId: 'c-cancel-once',
+      turnId: 'g-cancelled'
+    });
+    expect(retried.token).toBe(first.token);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(calls).toBe(1);
+  });
+
+  it('does not forget a spent generation when its visible draft ages past the ten-minute TTL', async () => {
+    const session = await createSession({ title: 'goal', conversationId: 'c-expired-once' });
+    await appendEvent(session.id, {
+      time: 1_000,
+      source: 'extension',
+      kind: 'user_message',
+      message: { text: 'keep going', truncated: false, chars: 10 }
+    });
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls += 1;
+      return stream([delta('one last correction'), 'data: [DONE]\n']);
+    }) as never;
+
+    const first = goal.startGoalDraft({ sessionId: session.id, conversationId: 'c-expired-once', turnId: 'g-expired' });
+    const ready = await settled('c-expired-once');
+    expect(ready.stage).toBe('ready');
+    expect(calls).toBe(1);
+
+    // This is the dangerous lost-ACK shape: ChatGPT may already have accepted the user message,
+    // while the app still holds the ready draft as unacknowledged. The browser receipt is keyed
+    // by this token. Expiring the *payload* must not expire the generation identity and mint a
+    // different token that the browser cannot recognise as already sent.
+    const afterTtl = Date.now() + 11 * 60_000;
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(afterTtl);
+    try {
+      expect(goal.goalViewFor('c-expired-once')).toBeNull();
+      const retried = goal.startGoalDraft({
+        sessionId: session.id,
+        conversationId: 'c-expired-once',
+        turnId: 'g-expired'
+      });
+      expect(retried.token).toBe(first.token);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(calls).toBe(1);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+});
+
+describe('when OpenRouter refuses', () => {
+  const seed = async (conversationId: string): Promise<string> => {
+    const session = await createSession({ title: 'goal', conversationId });
+    await appendEvent(session.id, {
+      time: 1_000,
+      source: 'extension',
+      kind: 'user_message',
+      message: { text: 'go on', truncated: false, chars: 5 }
+    });
+    return session.id;
+  };
+
+  /** The status codes a person can act on, said in words rather than as a number. */
+  it('names the reason, and never quotes the key back', async () => {
+    const cases: Array<[number, string, string]> = [
+      [401, 'no', 'auth_rejected'],
+      [402, 'no', 'out_of_credit'],
+      [404, 'no', 'unknown_model'],
+      [429, 'no', 'rate_limited'],
+      [503, 'no', 'http_503']
+    ];
+    for (const [index, [status, _body, expected]] of cases.entries()) {
+      const id = `c-fail-${index}`;
+      const sessionId = await seed(id);
+      globalThis.fetch = (async () =>
+        new Response(JSON.stringify({ error: { message: 'upstream said no' } }), { status })) as never;
+      goal.startGoalDraft({ sessionId, conversationId: id, turnId: 'g-1' });
+      const view = await settled(id);
+      expect(view.stage, String(status)).toBe('failed');
+      expect(view.error, String(status)).toContain(expected);
+      expect(view.error).not.toContain('sk-or-test');
+    }
+  });
+
+  it('keeps a failure the page cannot retry on screen after the page acknowledged it (#584)', async () => {
+    // 402: nothing will change until the user adds credit, so the page does not retry. It shows the
+    // reason and acknowledges the draft. The failure must stay the chat's Goal state: hiding it left
+    // only the still-owed reply, which read as "Answer settling" forever.
+    const sessionId = await seed('c-no-credit');
+    globalThis.fetch = (async () => new Response(JSON.stringify({ error: { message: 'Insufficient credits' } }), { status: 402 })) as never;
+    goal.startGoalDraft({ sessionId, conversationId: 'c-no-credit', turnId: 'g-1' });
+    const failed = await settled('c-no-credit');
+    expect(failed.stage).toBe('failed');
+    expect(goal.ackGoalDraft('c-no-credit', failed.token)).toBe(true);
+    expect(goal.goalViewFor('c-no-credit')).toMatchObject({ stage: 'failed', error: expect.stringContaining('out_of_credit'), reply: '' });
+    // Still there once the draft's payload would otherwise expire.
+    const now = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(now + 11 * 60_000);
+    try {
+      expect(goal.goalViewFor('c-no-credit')).toMatchObject({ stage: 'failed', error: expect.stringContaining('out_of_credit') });
+    } finally { clock.mockRestore(); }
+
+    // A failure the page retries on its own clock is still hidden once acknowledged.
+    const retrySession = await seed('c-busy');
+    globalThis.fetch = (async () => new Response(JSON.stringify({ error: { message: 'busy' } }), { status: 503 })) as never;
+    goal.startGoalDraft({ sessionId: retrySession, conversationId: 'c-busy', turnId: 'g-1' });
+    const busy = await settled('c-busy');
+    expect(goal.ackGoalDraft('c-busy', busy.token)).toBe(true);
+    expect(goal.goalViewFor('c-busy')).toBeNull();
+  });
+
+  it('does not read an arbitrarily large OpenRouter error body just to produce a short status', async () => {
+    const sessionId = await seed('c-huge-error');
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ error: { message: 'small visible detail' } }), {
+        status: 503,
+        headers: { 'content-length': String(64 * 1024 + 1) }
+      })) as never;
+
+    goal.startGoalDraft({ sessionId, conversationId: 'c-huge-error', turnId: 'g-1' });
+    const view = await settled('c-huge-error');
+    expect(view.stage).toBe('failed');
+    expect(view.error).toContain('http_503');
+    expect(view.error).toMatch(/body.*too large/i);
+  });
+
+  it('refuses before spending anything when there is no key', async () => {
+    const sessionId = await seed('c-nokey');
+    await setSecret('openRouterApiKey', '');
+    let called = false;
+    globalThis.fetch = (async () => {
+      called = true;
+      return stream(['data: [DONE]\n']);
+    }) as never;
+
+    goal.startGoalDraft({ sessionId, conversationId: 'c-nokey', turnId: 'g-1' });
+    const view = await settled('c-nokey');
+    expect(view.stage).toBe('failed');
+    expect(view.error).toBe('no_api_key');
+    expect(called).toBe(false);
+    expect(await goal.goalKeyPresent()).toBe(false);
+  });
+
+  /**
+   * An empty answer is a failure, not a message. Typing nothing into a chat would send the
+   * turn on with no content at all, which is worse than saying the request failed.
+   */
+  it('treats an empty answer as a failure rather than as a message', async () => {
+    const sessionId = await seed('c-empty');
+    globalThis.fetch = (async () => stream([delta('   '), 'data: [DONE]\n'])) as never;
+    goal.startGoalDraft({ sessionId, conversationId: 'c-empty', turnId: 'g-1' });
+    const view = await settled('c-empty');
+    expect(view.stage).toBe('failed');
+    expect(view.error).toBe('empty_reply');
+  });
+
+  it('does not promote a partial reply when a later SSE record is malformed', async () => {
+    const sessionId = await seed('c-malformed-stream');
+    globalThis.fetch = (async () => stream([delta('unfinished thought'), 'data: {not-json}\n'])) as never;
+
+    goal.startGoalDraft({ sessionId, conversationId: 'c-malformed-stream', turnId: 'g-1' });
+    const view = await settled('c-malformed-stream');
+    expect(view.stage).toBe('failed');
+    expect(view.error).toBe('request_failed: malformed_stream_record');
+    expect(view.reply).toBe('');
+  });
+
+  it('refuses an over-long generated user reply instead of streaming an unbounded composer payload', async () => {
+    const sessionId = await seed('c-too-long');
+    globalThis.fetch = (async () => stream([delta('x'.repeat(12_001)), 'data: [DONE]\n'])) as never;
+
+    goal.startGoalDraft({ sessionId, conversationId: 'c-too-long', turnId: 'g-1' });
+    const view = await settled('c-too-long');
+    expect(view.stage).toBe('failed');
+    expect(view.error).toBe('reply_too_long');
+    expect(view.reply).toBe('');
+  });
+
+  /** A chat with no local recording has no conversation to reason about. */
+  it('says so when there is nothing recorded to continue from', async () => {
+    const session = await createSession({ title: 'goal', conversationId: 'c-silent' });
+    globalThis.fetch = (async () => stream(['data: [DONE]\n'])) as never;
+    goal.startGoalDraft({ sessionId: session.id, conversationId: 'c-silent', turnId: 'g-1' });
+    const view = await settled('c-silent');
+    expect(view.stage).toBe('failed');
+    expect(view.error).toBe('no_conversation');
+  });
+});
+
+describe('the model catalogue', () => {
+  const listing = {
+    data: [
+      { id: 'old/model', name: 'Old', created: 1_000, context_length: 8_000 },
+      { id: 'new/model', name: 'New', created: 9_000, context_length: 200_000 },
+      { id: 'middle/model', name: 'Middle', created: 5_000 },
+      { id: 42, name: 'nonsense' }
+    ]
+  };
+
+  /**
+   * Sorted by release date rather than alphabetically or by popularity, because the question
+   * the picker answers is "what is new" — the reason to open it is that a better model exists
+   * than the one already chosen.
+   */
+  it('is newest first, twenty at a time, and skips entries it cannot read', async () => {
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls++;
+      return new Response(JSON.stringify(listing), { status: 200 });
+    }) as never;
+
+    const page = await goal.listGoalModels(0, 2);
+    expect(page.total).toBe(3);
+    expect(page.models.map((model) => model.id)).toEqual(['new/model', 'middle/model']);
+    expect(page.models[0]!.contextLength).toBe(200_000);
+    // A listing that did not say when a model was released still lists it.
+    expect(page.models[1]!.contextLength).toBe(0);
+
+    const next = await goal.listGoalModels(2, 2);
+    expect(next.models.map((model) => model.id)).toEqual(['old/model']);
+    // The listing is small and changes daily, not by the second: the second page came out
+    // of the cache rather than off the network.
+    expect(calls).toBe(1);
+    expect(goal.MODEL_PAGE_SIZE).toBe(20);
+  });
+
+  it('searches the whole catalogue before paging matches', async () => {
+    const entries = Array.from({ length: 45 }, (_, index) => ({
+      id: `vendor/model-${index}`,
+      name: `Model ${index}`,
+      created: 10_000 - index
+    }));
+    entries[44] = { id: 'hidden/vendor-needle', name: 'Needle Model', created: 1 };
+    globalThis.fetch = vi.fn(async () => Response.json({ data: entries }));
+
+    const byName = await goal.listGoalModels(0, 20, 'needle');
+    expect(byName.total).toBe(1);
+    expect(byName.models.map(model => model.id)).toEqual(['hidden/vendor-needle']);
+
+    const byId = await goal.listGoalModels(0, 20, 'VENDOR-NEEDLE');
+    expect(byId.total).toBe(1);
+    expect(byId.models.map(model => model.id)).toEqual(['hidden/vendor-needle']);
+
+    const cleared = await goal.listGoalModels(0, 20, '   ');
+    expect(cleared.total).toBe(45);
+    expect(cleared.models).toHaveLength(20);
+    expect(cleared.models[0]?.id).toBe('vendor/model-0');
+  });
+
+  it('returns catalogue reasoning metadata for the selected model even outside the requested page', async () => {
+    await saveConfig({ ...defaultConfig(), goal: { ...defaultConfig().goal, model: 'selected/old-model' } });
+    globalThis.fetch = vi.fn(async () => Response.json({ data: [
+      { id: 'new/model', name: 'New', created: 9000 },
+      { id: 'selected/old-model', name: 'Selected', created: 1, reasoning: {
+        supported_efforts: ['max', 'high', 'low'], default_effort: 'max', mandatory: true
+      } }
+    ] }));
+    const page = await goal.listGoalModels(0, 1);
+    expect(page.models.map(model => model.id)).toEqual(['new/model']);
+    expect(page.selectedModel).toMatchObject({ id: 'selected/old-model', reasoning: {
+      supportedEfforts: ['max', 'high', 'low'], defaultEffort: 'max', mandatory: true
+    } });
+    expect((await goal.listGoalModels(1, 1)).models[0]).toEqual(page.selectedModel);
+  });
+
+  it('does not reuse a restricted model catalogue after the OpenRouter key is replaced', async () => {
+    const seenAuth: string[] = [];
+    globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+      const authorization = String((init?.headers as Record<string, string> | undefined)?.authorization ?? '');
+      seenAuth.push(authorization);
+      const id = authorization.endsWith('key-b') ? 'only-for-b' : 'only-for-a';
+      return new Response(JSON.stringify({ data: [{ id, name: id, created: 1 }] }), { status: 200 });
+    }) as never;
+
+    await setSecret('openRouterApiKey', 'key-a');
+    expect((await goal.listGoalModels()).models.map((model) => model.id)).toEqual(['only-for-a']);
+    await setSecret('openRouterApiKey', 'key-b');
+    expect((await goal.listGoalModels()).models.map((model) => model.id)).toEqual(['only-for-b']);
+    expect(seenAuth).toEqual(['Bearer key-a', 'Bearer key-b']);
+  });
+
+  it('keeps no catalogue fetched with a key replaced while it loaded, and reuses one while the key stays', async () => {
+    const seenAuth: string[] = [];
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+      const authorization = String((init?.headers as Record<string, string> | undefined)?.authorization ?? '');
+      seenAuth.push(authorization);
+      if (authorization.endsWith('key-a')) await held;
+      const id = authorization.endsWith('key-b') ? 'only-for-b' : 'only-for-a';
+      return new Response(JSON.stringify({ data: [{ id, name: id, created: 1 }] }), { status: 200 });
+    }) as never;
+
+    await setSecret('openRouterApiKey', 'key-a');
+    const loading = goal.listGoalModels();
+    await vi.waitFor(() => expect(seenAuth).toEqual(['Bearer key-a']));
+    await setSecret('openRouterApiKey', 'key-b');
+    release();
+    expect((await loading).models.map((model) => model.id)).toEqual(['only-for-a']);
+    expect((await goal.listGoalModels()).models.map((model) => model.id)).toEqual(['only-for-b']);
+    expect((await goal.listGoalModels()).models.map((model) => model.id)).toEqual(['only-for-b']);
+    expect(seenAuth).toEqual(['Bearer key-a', 'Bearer key-b']);
+  });
+
+  it('says the listing failed rather than pretending the catalogue is empty', async () => {
+    globalThis.fetch = (async () => new Response('nope', { status: 500 })) as never;
+    await expect(goal.listGoalModels(0, 20)).rejects.toThrow('HTTP 500');
+  });
+
+  it('times out a model catalogue request whose provider never answers', async () => {
+    vi.useFakeTimers();
+    try {
+      const opened: { signal: AbortSignal | null } = { signal: null };
+      let markFetchStarted: () => void = () => {};
+      const fetchStarted = new Promise<void>((resolve) => {
+        markFetchStarted = resolve;
+      });
+      globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+        opened.signal = init?.signal ?? null;
+        markFetchStarted();
+        return await new Promise<Response>((_resolve, reject) => {
+          opened.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true });
+        });
+      }) as never;
+
+      // Attach the rejection observer before advancing fake time; otherwise Node correctly
+      // reports the timeout rejection as temporarily unhandled before the assertion below.
+      const pending = goal.listGoalModels().then(
+        () => null,
+        (error: Error) => error
+      );
+      // Secret lookup now initializes Electron's non-blocking async safeStorage provider before
+      // the network request. Wait for the observable fetch boundary instead of assuming an exact
+      // number of internal promise turns between the API call and provider I/O.
+      await fetchStarted;
+      expect(opened.signal).not.toBeNull();
+      await vi.advanceTimersByTimeAsync(31_000);
+      const failure = await pending;
+      expect(failure).toBeInstanceOf(Error);
+      expect(failure?.message).toMatch(/timed out/i);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('rejects a model catalogue whose declared body exceeds the bounded provider response', async () => {
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify(listing), {
+        status: 200,
+        headers: { 'content-length': String(8 * 1024 * 1024 + 1) }
+      })) as never;
+
+    await expect(goal.listGoalModels()).rejects.toThrow(/body.*too large/i);
+  });
+
+  it('bounds untrusted model fields and catalogue cardinality before caching them', async () => {
+    const hugeName = 'n'.repeat(2_000);
+    const entries = Array.from({ length: 5_100 }, (_, index) => ({
+      id: `provider/model-${index}`,
+      name: index === 0 ? hugeName : `Model ${index}`,
+      created: index
+    }));
+    // An identifier too large to be a sane provider id is not safe to persist into config or
+    // send back as a selection, so it should be skipped rather than truncated into a different
+    // id. Display names may be truncated because they are presentation only.
+    entries.push({ id: `provider/${'x'.repeat(1_000)}`, name: 'bad id', created: 99_999 });
+    globalThis.fetch = (async () => new Response(JSON.stringify({ data: entries }), { status: 200 })) as never;
+
+    const page = await goal.listGoalModels(0, 100);
+    expect(page.total).toBeLessThanOrEqual(5_000);
+    expect(page.models.some((model) => model.id.length > 500)).toBe(false);
+    expect(page.models.every((model) => model.name.length <= 500)).toBe(true);
+  });
+});
+
+/**
+ * The draft as it would have been typed, not as a model writes.
+ *
+ * Two separate claims, and the second one is the load-bearing one: the em dash goes, and a
+ * couple of the mistakes a person leaves behind go in — but the whole thing has to be a pure
+ * function of the draft, because a retried request has to be handed back the same message.
+ */
+describe('the message a person would have typed', () => {
+  it('leaves no em dash anywhere in the reply', () => {
+    const written =
+      'the picker stops at twenty — scrolling loads nothing. page a screenful before the end ' +
+      '— the button below the list is not where anyone looks.';
+    const typed = goal.humanReply(written);
+    expect(typed).not.toMatch(/[—–]/);
+    // A comma is that sentence typed, so the shape of the sentence survives.
+    expect(typed).toContain('at twenty, scrolling loads nothing');
+  });
+
+  it('keeps a line that opens with a dash a line, and a range a range', () => {
+    // Two lines in, two lines out: a dash opening a line is a bullet, and the horizontal-only
+    // whitespace class is what keeps the newline from being swallowed with it.
+    const lines = goal.humanReply('— check the tests\n— then ship it').split('\n');
+    expect(lines.length).toBe(2);
+    expect(lines.every((line) => /^[a-z]/.test(line))).toBe(true);
+    expect(goal.humanReply('it took 10—20 seconds')).toContain('10-20');
+  });
+
+  it('never leaves a doubled comma where the dash already had one', () => {
+    expect(goal.humanReply('two things, — the tests and the build')).not.toMatch(/,\s*,/);
+  });
+
+  it('puts a mistake in, and not many', () => {
+    const written = 'that does not fix it. the answer still renders twice, look at the id-less sections';
+    const typed = goal.humanReply(written);
+    expect(typed).not.toBe(written);
+    const differing = [...written].filter((letter, at) => letter !== typed[at]).length;
+    // A slip, not a rewrite. Every mutation here is one character long.
+    expect(differing).toBeGreaterThan(0);
+    expect(typed.length).toBeGreaterThanOrEqual(written.length - 3);
+  });
+
+  it('hands back the identical message every time it is asked', () => {
+    const written =
+      'the settings sheet still overflows on the right, can you cap the column and check the ' +
+      'select as well. i really do not want another guess about it.';
+    const once = goal.humanReply(written);
+    expect(goal.humanReply(written)).toBe(once);
+    expect(goal.humanReply(written)).toBe(once);
+    // And a different draft is not the same draft: the seed is the text, not a constant.
+    expect(goal.humanReply(`${written} also the picker.`)).not.toBe(once);
+  });
+
+  /**
+   * The one thing a typo here could actually break. This message is about to be acted on by
+   * ChatGPT, and a mistake inside a path or a command is a different instruction rather than
+   * a slip — so prose is the only place they are allowed.
+   */
+  it('never touches a path, a command or anything in backticks', () => {
+    const written =
+      'run `npm run verify` first and then look at src/renderer/chat.ts, the guard is in ' +
+      'maybeSendGoalReply and the report is at https://example.com/build/latest please';
+    const typed = goal.humanReply(written);
+    expect(typed).toContain('`npm run verify`');
+    expect(typed).toContain('src/renderer/chat.ts');
+    expect(typed).toContain('https://example.com/build/latest');
+  });
+
+  // VM, 2026-10-19: a Goal follow-up said "run powershel -NoProfile -Command ...". A command
+  // written without backticks is still a command, and a word the reply must contain is literal.
+  it.each([
+    // In each draft the protected word is the only one a mistake could go into.
+    ['a command line without backticks', 'ok, run powershell -NoProfile now', 'powershell -NoProfile'],
+    ['a command after run', 'pls run npm install now', 'npm install'],
+    ['quoted text', 'say "checked" now', '"checked"'],
+    ['the word a reply must be', 'say the word ready now', 'the word ready']
+  ])('keeps %s exact', (_, written, kept) => {
+    expect(goal.humanReply(written)).toContain(kept);
+  });
+
+  it('leaves a message with nothing to spoil exactly as it was', () => {
+    expect(goal.humanReply('ok cool')).toBe('ok cool');
+  });
+
+  it('is what the page is actually handed', async () => {
+    const session = await createSession({ title: 'goal', conversationId: 'c-typed' });
+    await appendEvent(session.id, {
+      time: 1_000,
+      source: 'extension',
+      kind: 'user_message',
+      message: { text: 'keep going', truncated: false, chars: 10 }
+    });
+    globalThis.fetch = (async () =>
+      stream([delta('the tests still fail — look at the id-less sections'), 'data: [DONE]\n'])) as never;
+
+    goal.startGoalDraft({ sessionId: session.id, conversationId: 'c-typed', turnId: 'g-typed' });
+    const view = await settled('c-typed');
+
+    expect(view.stage).toBe('ready');
+    expect(view.reply).not.toMatch(/[—–]/);
+    expect(view.reply).toBe(goal.humanReply('the tests still fail — look at the id-less sections'));
+  });
+});
+
+/**
+ * A chat with a specific goal is the same engine pointed the other way.
+ *
+ * The ordinary loop defaults to silence, because in a normal chat the request is whatever
+ * the user last typed and inventing more of it is the failure mode. A goal inverts that: the
+ * user named the finish line up front and handed the wheel over, so the loop keeps talking
+ * until the line is crossed — including, uniquely, when nothing has been said yet at all.
+ */
+describe('a chat driven towards a specific goal', () => {
+  /** The system messages one request was actually built from, in order. */
+  function capture(): { seen: { role: string; content: string }[] } {
+    const box = { seen: [] as { role: string; content: string }[] };
+    globalThis.fetch = (async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body)) as { messages: { role: string; content: string }[] };
+      box.seen = body.messages;
+      return decision('continue', 'the migration is still missing. add it and run the suite');
+    }) as never;
+    return box;
+  }
+
+  it('swaps the continuation gate for the goal, and puts the goal itself in the prompt', async () => {
+    const session = await createSession({ title: 'goal', conversationId: 'c-obj-1' });
+    await appendEvent(session.id, {
+      time: 1_000,
+      source: 'extension',
+      kind: 'user_message',
+      message: { text: 'start on the port', truncated: false, chars: 17 }
+    });
+    goal.setGoalObjective('c-obj-1', 'port the whole module to typescript and make the suite green');
+    const box = capture();
+
+    goal.startGoalDraft({ sessionId: session.id, conversationId: 'c-obj-1', turnId: 'g-obj-1' });
+    const view = await settled('c-obj-1');
+
+    expect(view.stage).toBe('ready');
+    const system = box.seen.filter((message) => message.role === 'system').map((message) => message.content);
+    expect(system[0]).toBe(prompts.DEFAULT_GOAL_OBJECTIVE_SYSTEM_PROMPT);
+    expect(system[1]).toContain('port the whole module to typescript and make the suite green');
+    // The standing instruction is the *other* mode's, and sending both would give the model
+    // one prompt telling it where to read the goal from and another telling it there is none.
+    expect(system).not.toContain(prompts.DEFAULT_GOAL_SYSTEM_PROMPT);
+    // The conversation is still last among the non-system messages, with the goal-flavoured
+    // closing reminder after it rather than the gate's.
+    expect(referenceTranscript(box.seen)).toEqual([
+      { role: 'user', content: 'start on the port' }
+    ]);
+    expect(box.seen.at(-1)!.content).toBe(prompts.GOAL_OBJECTIVE_TRAILER);
+  });
+
+  /**
+   * The one case the gate refuses outright. `no_conversation` exists because a half-recovered
+   * recording can hold assistant prose with no user row behind it, and asking a model to
+   * continue that is asking it to invent the request. A goal *is* the request, written down
+   * before the chat existed, so the same emptiness means the opposite thing.
+   */
+  it('writes the first message of a chat that has said nothing yet', async () => {
+    const session = await createSession({ title: 'goal', conversationId: 'c-obj-empty' });
+    goal.setGoalObjective('c-obj-empty', 'get the release out');
+    const box = capture();
+
+    goal.startGoalDraft({ sessionId: session.id, conversationId: 'c-obj-empty', turnId: 'g-obj-empty' });
+    const view = await settled('c-obj-empty');
+
+    expect(view.stage).toBe('ready');
+    expect(view.error).toBeNull();
+    expect(referenceTranscript(box.seen)).toEqual([
+      { role: 'user', content: prompts.GOAL_OBJECTIVE_OPENING_TURN }
+    ]);
+  });
+
+  it('refuses the same empty conversation when there is no goal to supply the request', async () => {
+    const session = await createSession({ title: 'goal', conversationId: 'c-obj-none' });
+    globalThis.fetch = (async () => decision('continue', 'should never be asked')) as never;
+
+    goal.startGoalDraft({ sessionId: session.id, conversationId: 'c-obj-none', turnId: 'g-obj-none' });
+    const view = await settled('c-obj-none');
+
+    expect(view.stage).toBe('failed');
+    expect(view.error).toBe('no_conversation');
+  });
+
+  it('keeps the saved objective when one Goal run says it is reached', async () => {
+    const session = await createSession({ title: 'goal', conversationId: 'c-obj-done' });
+    await appendEvent(session.id, {
+      time: 1_000,
+      source: 'extension',
+      kind: 'user_message',
+      message: { text: 'ship it', truncated: false, chars: 7 }
+    });
+    goal.setGoalObjective('c-obj-done', 'get the release out');
+    globalThis.fetch = (async () => decision('stop')) as never;
+
+    goal.startGoalDraft({ sessionId: session.id, conversationId: 'c-obj-done', turnId: 'g-obj-done' });
+    const view = await settled('c-obj-done');
+
+    expect(view.stage).toBe('no-reply');
+    expect(goal.goalObjectiveFor('c-obj-done')).toBe('get the release out');
+  });
+
+  it('restores chat-specific objectives after restart without creating a draft', () => {
+    goal.setGoalObjective('c-obj-restored', 'keep the overnight build green');
+    const saved = goal.snapshotGoalObjectives();
+    goal.resetGoalStateForTests();
+
+    goal.restoreGoalObjectives(saved);
+
+    expect(goal.goalObjectiveFor('c-obj-restored')).toBe('keep the overnight build green');
+    expect(goal.goalViewFor('c-obj-restored')).toBeNull();
+  });
+
+  it('deduplicates Goal obligations by stable assistant reply across reload turn ids', async () => {
+    await goal.acceptGoalReplyNow({
+      conversationId: 'c-reply-stable',
+      sessionId: 'session-reply-stable',
+      replyId: 'assistant-message-stable',
+      turnId: 'g-before-reload',
+      eventSeq: 12,
+      blocked: false
+    });
+    await goal.acceptGoalReplyNow({
+      conversationId: 'c-reply-stable',
+      sessionId: 'session-reply-stable',
+      replyId: 'assistant-message-stable',
+      turnId: 'g-after-reload',
+      eventSeq: 99,
+      blocked: false
+    });
+
+    expect(goal.goalPendingReplyFor('c-reply-stable')).toEqual({
+      replyId: 'assistant-message-stable',
+      turnId: 'g-before-reload',
+      eventSeq: 12,
+      acceptedAt: expect.any(Number)
+    });
+  });
+
+  it.each([false, true])('preserves pending source debt across settings invalidation and restart (master Off: %s)', async off => {
+    const conversationId = 'settings-pending-source';
+    const session = await createSession({ title: 'Goal settings', conversationId });
+    await appendEvent(session.id, { source: 'extension', kind: 'user_message', time: Date.now(),
+      message: { text: 'Finish the original task', chars: 24, truncated: false } });
+    await goal.acceptGoalReplyNow({ conversationId, sessionId: session.id, replyId: 'turn:source-turn',
+      turnId: 'source-turn', eventSeq: 0, blocked: false });
+    const original = goal.goalPendingReplyFor(conversationId);
+    expect(original).not.toBeNull();
+    globalThis.fetch = (async () => decision('continue', 'Finish the remaining task')) as never;
+    const first = goal.startGoalDraft({ conversationId, sessionId: session.id, turnId: 'source-turn' });
+    await settled(conversationId);
+    goal.retireGoalDrafts(off);
+    expect(goal.ackGoalDraft(conversationId, first.token)).toBe(false);
+    goal.restoreGoalReplies(goal.snapshotGoalReplies());
+    expect(goal.goalPendingReplyFor(conversationId)).toEqual(off ? null : original);
+    if (!off) {
+      const next = goal.startGoalDraft({ conversationId, sessionId: session.id, turnId: 'source-turn' });
+      expect(next.token).not.toBe(first.token);
+      expect((await settled(conversationId)).stage).toBe('ready');
+    }
+  });
+
+  it('rejects zero-sequence restore records without an exact provisional turn identity', () => {
+    goal.restoreGoalReplies({ version: 1, savedAt: Date.now(), replies: [{
+      conversationId: 'invalid-provisional', sessionId: 'session', replyId: 'unproved-final',
+      turnId: 'source-turn', eventSeq: 0, acceptedAt: Date.now(), state: 'pending'
+    }] });
+    expect(goal.goalPendingReplyFor('invalid-provisional')).toBeNull();
+  });
+
+  it('persists the three-reload Goal pickup stop and refuses a fourth attempt after restore', async () => {
+    const conversationId = 'goal-pickup-bound';
+    const session = await createSession({ title: 'Bounded Goal pickup', conversationId });
+    const acceptedAt = Date.now();
+    await goal.acceptGoalReplyNow({ conversationId, sessionId: session.id, replyId: 'goal-reply-bound',
+      turnId: 'goal-turn-bound', eventSeq: 42, blocked: false });
+
+    expect(await goal.recordGoalPickupAttemptNow(conversationId, 'goal-reply-bound', acceptedAt + 120_000, acceptedAt + 420_000))
+      .toEqual({ attempts: 1, nextAt: acceptedAt + 420_000 });
+    expect(await goal.recordGoalPickupAttemptNow(conversationId, 'goal-reply-bound', acceptedAt + 420_000, acceptedAt + 1_020_000))
+      .toEqual({ attempts: 2, nextAt: acceptedAt + 1_020_000 });
+    expect(await goal.recordGoalPickupAttemptNow(conversationId, 'goal-reply-bound', acceptedAt + 1_020_000, acceptedAt + 1_920_000))
+      .toEqual({ attempts: 3, stoppedAt: acceptedAt + 1_020_000 });
+
+    const saved = goal.snapshotGoalReplies();
+    goal.resetGoalStateForTests();
+    goal.restoreGoalReplies(saved);
+    expect(goal.goalPendingReplyFor(conversationId)).toMatchObject({ pickupAttempts: 3, pickupStoppedAt: acceptedAt + 1_020_000 });
+    expect(await goal.recordGoalPickupAttemptNow(conversationId, 'goal-reply-bound', acceptedAt + 1_920_000)).toBeNull();
+  });
+
+  it('upgrades a decided provisional turn to the stable reply without reopening it', async () => {
+    const conversationId = 'c-reply-provisional-upgrade';
+    const turnId = 'g-reply-provisional-upgrade';
+    const session = await createSession({ title: 'goal', conversationId });
+    await appendEvent(session.id, {
+      time: 1_000,
+      source: 'extension',
+      kind: 'user_message',
+      message: { text: 'finish the work', truncated: false, chars: 15 }
+    });
+    await goal.acceptGoalReplyNow({
+      conversationId,
+      sessionId: session.id,
+      replyId: `turn:${turnId}`,
+      turnId,
+      eventSeq: 0,
+      blocked: false
+    });
+    globalThis.fetch = (async () => decision('stop')) as never;
+
+    goal.startGoalDraft({ sessionId: session.id, conversationId, turnId });
+    const decided = await settled(conversationId);
+    expect(decided.stage).toBe('no-reply');
+    expect(goal.ackGoalDraft(conversationId, decided.token)).toBe(true);
+    goal.restoreGoalReplies(goal.snapshotGoalReplies());
+    expect(goal.snapshotGoalReplies().replies).toContainEqual(expect.objectContaining({ conversationId, state: 'handled', eventSeq: 0 }));
+
+    // Fiber can publish the stable assistant id after the provider decision. It strengthens
+    // the tombstone's identity; it does not turn the already-decided message back into work.
+    await goal.acceptGoalReplyNow({
+      conversationId,
+      sessionId: session.id,
+      replyId: 'assistant-stable-provisional-upgrade',
+      turnId,
+      eventSeq: 12,
+      blocked: false
+    });
+    expect(goal.goalPendingReplyFor(conversationId)).toBeNull();
+    expect(goal.snapshotGoalReplies().replies).toContainEqual(
+      expect.objectContaining({
+        replyId: 'assistant-stable-provisional-upgrade',
+        turnId,
+        eventSeq: 12,
+        state: 'handled'
+      })
+    );
+  });
+
+  it('restores an accepted pending reply after app restart', async () => {
+    await goal.acceptGoalReplyNow({
+      conversationId: 'c-reply-restored',
+      sessionId: 'session-reply-restored',
+      replyId: 'assistant-message-restored',
+      turnId: 'g-reply-restored',
+      eventSeq: 7,
+      blocked: false
+    });
+    const saved = goal.snapshotGoalReplies();
+    goal.resetGoalStateForTests();
+    goal.restoreGoalReplies(saved);
+
+    expect(goal.goalPendingReplyFor('c-reply-restored')).toMatchObject({
+      replyId: 'assistant-message-restored',
+      turnId: 'g-reply-restored'
+    });
+  });
+
+  it('stores a handled tombstone when Goal was off at terminal acceptance', async () => {
+    await saveConfig({
+      ...defaultConfig(),
+      goal: { ...defaultConfig().goal, backend: 'api', loopBackend: 'api', enabled: false }
+    });
+    await goal.acceptGoalReplyNow({
+      conversationId: 'c-reply-disabled',
+      sessionId: 'session-reply-disabled',
+      replyId: 'assistant-message-disabled',
+      turnId: 'g-reply-disabled',
+      eventSeq: 4,
+      blocked: false
+    });
+
+    expect(goal.goalPendingReplyFor('c-reply-disabled')).toBeNull();
+    expect(goal.snapshotGoalReplies().replies).toContainEqual(
+      expect.objectContaining({ replyId: 'assistant-message-disabled', state: 'handled' })
+    );
+  });
+
+  it.each(['none', 'page-only', 'other-turn', 'unattributed', 'exact'] as const)('requires exact recorded MCP for automatic Loop, while explicit On may proceed (%s)', async proof => {
+    const conversationId = `automatic-loop-proof-${proof}`;
+    const session = await createSession({ conversationId });
+    await goal.setGoalSwitchNow(conversationId, 'loop', true);
+    await appendEvent(session.id, { source: 'extension', time: 1000, kind: 'user_message', message: { text: 'Continue the task', chars: 17, truncated: false } });
+    await appendEvent(session.id, { source: 'extension', time: 1100, kind: 'turn_start', turnId: 'source-turn' });
+    if (proof === 'page-only') await appendEvent(session.id, { source: 'extension', time: 1200, kind: 'page_tool', turnId: 'source-turn', messageId: 'page-read', label: 'Called read' });
+    if (['other-turn', 'unattributed', 'exact'].includes(proof)) await appendEvent(session.id, {
+      source: 'mcp', time: 1300, kind: 'tool_call', turnId: proof === 'other-turn' ? 'older-turn' : 'source-turn', call: {
+        callId: 'proof-call', tool: 'read', attribution: proof === 'unattributed' ? 'unattributed' : 'request_id',
+        requestId: proof === 'unattributed' ? null : 'proof-request', conversationId: proof === 'unattributed' ? null : conversationId,
+        attributionMethod: 'request_id', outcome: 'ok', durationMs: 1,
+        args: { text: '{}', chars: 2, truncated: false }, result: { text: 'ok', chars: 2, truncated: false },
+        summary: { kind: 'read', tone: 'neutral', title: 'Read' }
+      }
+    });
+    await appendEvent(session.id, { source: 'extension', time: 1400, kind: 'turn_end', turnId: 'source-turn', outcome: 'completed' });
+    await goal.acceptGoalReplyNow({ conversationId, sessionId: session.id, replyId: 'source-final', turnId: 'source-turn', eventSeq: 100, blocked: false });
+    expect(goal.goalPendingReplyFor(conversationId) !== null).toBe(proof === 'exact');
+    const fetch = vi.fn(async () => decision('continue', 'Continue the task'));
+    globalThis.fetch = fetch;
+    expect(await goal.draftFastFollowup(session.id)).toBe(proof === 'exact' ? 'Continue the task' : null);
+    expect(fetch).toHaveBeenCalledTimes(proof === 'exact' ? 1 : 0);
+    const legacy = goal.snapshotGoalReplies();
+    legacy.replies.find(row => row.conversationId === conversationId)!.state = 'pending';
+    goal.restoreGoalReplies(legacy);
+    expect(await goal.loopReplyHasAuthority(session.id, conversationId, 'source-turn')).toBe(proof === 'exact');
+    await goal.setGoalReplyActiveNow(conversationId, false);
+    await goal.setGoalReplyActiveNow(conversationId, true);
+    expect(goal.goalPendingReplyFor(conversationId)?.replyId).toBe('source-final');
+    goal.restoreGoalReplies(goal.snapshotGoalReplies());
+    expect(await goal.loopReplyHasAuthority(session.id, conversationId, 'source-turn')).toBe(true);
+  });
+
+  it('durably cancels a pending ticket on Off and re-arms that stable final on On', async () => {
+    const conversationId = 'c-reply-switch-rearm';
+    await goal.acceptGoalReplyNow({
+      conversationId,
+      sessionId: 'session-reply-switch-rearm',
+      replyId: 'assistant-message-switch-rearm',
+      turnId: 'g-switch-rearm',
+      eventSeq: 14,
+      blocked: false
+    });
+    expect(goal.goalPendingReplyFor(conversationId)).toMatchObject({
+      replyId: 'assistant-message-switch-rearm'
+    });
+    const firstPickupAt = goal.goalPendingReplyFor(conversationId)!.acceptedAt;
+
+    expect(await goal.setGoalReplyActiveNow(conversationId, false)).toBe(true);
+    expect(goal.goalPendingReplyFor(conversationId)).toBeNull();
+    const off = goal.snapshotGoalReplies();
+    expect(off.replies).toContainEqual(
+      expect.objectContaining({ conversationId, replyId: 'assistant-message-switch-rearm', state: 'handled' })
+    );
+
+    // Model the reload boundary: Off is in the durable ledger, not only in the old page.
+    goal.resetGoalStateForTests();
+    goal.restoreGoalReplies(off);
+    expect(goal.goalPendingReplyFor(conversationId)).toBeNull();
+
+    expect(await goal.setGoalReplyActiveNow(conversationId, true)).toBe(true);
+    expect(goal.goalPendingReplyFor(conversationId)).toMatchObject({
+      replyId: 'assistant-message-switch-rearm',
+      turnId: 'g-switch-rearm'
+    });
+    expect(goal.goalPendingReplyFor(conversationId)!.acceptedAt).toBeGreaterThan(firstPickupAt);
+  });
+
+  it.each(['already-working', 'work-arrived-during-read'])('does not re-arm a handled reply when activation is %s', async scenario => {
+    const conversationId = `c-activation-${scenario}`;
+    await goal.acceptGoalReplyNow({ conversationId, sessionId: `session-${scenario}`, replyId: 'old-final', turnId: 'old-turn', eventSeq: 14, blocked: false });
+    await goal.setGoalReplyActiveNow(conversationId, false);
+    const before = goal.snapshotGoalReplies().replies.find(row => row.conversationId === conversationId);
+    const current = vi.fn().mockReturnValue(false);
+    if (scenario === 'work-arrived-during-read') current.mockReturnValueOnce(true);
+    expect(await goal.setGoalReplyActiveNow(conversationId, true, current)).toBe(false);
+    expect(goal.goalPendingReplyFor(conversationId)).toBeNull();
+    expect(goal.snapshotGoalReplies().replies.find(row => row.conversationId === conversationId)).toEqual(before);
+    expect(current).toHaveBeenCalledTimes(scenario === 'already-working' ? 1 : 2);
+  });
+
+  it.each(['user_message', 'turn_start'] as const)('does not re-arm an older final across a newer %s without active metadata', async kind => {
+    const conversationId = `activation-boundary-${kind}`;
+    const session = await createSession({ conversationId });
+    await goal.acceptGoalReplyNow({ conversationId, sessionId: session.id, replyId: 'older-final', turnId: 'older-turn', eventSeq: 1, blocked: false });
+    await goal.setGoalReplyActiveNow(conversationId, false);
+    await appendEvent(session.id, { time: Date.now(), source: 'extension', turnId: 'new-turn',
+      ...(kind === 'user_message' ? { kind, message: { text: 'new request', chars: 11, truncated: false } } : { kind }) });
+    expect(await goal.setGoalReplyActiveNow(conversationId, true)).toBe(false);
+    expect(goal.goalPendingReplyFor(conversationId)).toBeNull();
+  });
+
+  it('keeps an expired ticket as the stable-final tombstone a later On can re-arm', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-09-01T08:00:00Z'));
+      const conversationId = 'c-reply-expired-rearm';
+      await goal.acceptGoalReplyNow({
+        conversationId,
+        sessionId: 'session-reply-expired-rearm',
+        replyId: 'assistant-message-expired-rearm',
+        turnId: 'g-expired-rearm',
+        eventSeq: 15,
+        blocked: false
+      });
+      expect(await goal.setGoalReplyActiveNow(conversationId, false)).toBe(true);
+
+      vi.advanceTimersByTime(13 * 60 * 60_000);
+      expect(goal.goalPendingReplyFor(conversationId)).toBeNull();
+      // Exercise the normal snapshot/prune boundary that previously deleted the only exact
+      // identity an explicit later activation could safely pick up.
+      expect(goal.snapshotGoalReplies().replies).toContainEqual(
+        expect.objectContaining({ conversationId, state: 'handled' })
+      );
+
+      expect(await goal.setGoalReplyActiveNow(conversationId, true)).toBe(true);
+      expect(goal.goalPendingReplyFor(conversationId)).toMatchObject({
+        replyId: 'assistant-message-expired-rearm',
+        turnId: 'g-expired-rearm'
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  /**
+   * The obligation outlives every way of failing to answer it.
+   *
+   * The ledger row says one exact turn is owed a decision. Only a decision discharges it —
+   * a message the page typed, or NO_REPLY. A dropped stream, a rejected key, an exhausted
+   * balance and a clock running out are all this app failing to produce one, and recording a
+   * failure to answer as an answer is how a turn ended up silently owed nothing.
+   */
+  it('keeps the reply obligation pending through a retryable draft failure', async () => {
+    const session = await createSession({ title: 'goal', conversationId: 'c-owed-after-failure' });
+    await appendEvent(session.id, {
+      time: 1_000,
+      source: 'extension',
+      kind: 'user_message',
+      message: { text: 'keep going', truncated: false, chars: 10 }
+    });
+    await goal.acceptGoalReplyNow({
+      conversationId: 'c-owed-after-failure',
+      sessionId: session.id,
+      replyId: 'assistant-owed-after-failure',
+      turnId: 'g-owed-failure',
+      eventSeq: 3,
+      blocked: false
+    });
+    globalThis.fetch = (async () => new Response('nope', { status: 502 })) as never;
+
+    goal.startGoalDraft({ sessionId: session.id, conversationId: 'c-owed-after-failure', turnId: 'g-owed-failure' });
+    const failure = await settled('c-owed-after-failure');
+    expect(failure.stage).toBe('failed');
+    expect(goal.ackGoalDraft('c-owed-after-failure', failure.token)).toBe(true);
+
+    expect(goal.goalPendingReplyFor('c-owed-after-failure')).toMatchObject({
+      replyId: 'assistant-owed-after-failure',
+      turnId: 'g-owed-failure'
+    });
+  });
+
+  it('keeps the reply obligation pending through a settings failure the page will not retry', async () => {
+    const session = await createSession({ title: 'goal', conversationId: 'c-owed-after-settings' });
+    await appendEvent(session.id, {
+      time: 1_000,
+      source: 'extension',
+      kind: 'user_message',
+      message: { text: 'keep going', truncated: false, chars: 10 }
+    });
+    await goal.acceptGoalReplyNow({
+      conversationId: 'c-owed-after-settings',
+      sessionId: session.id,
+      replyId: 'assistant-owed-after-settings',
+      turnId: 'g-owed-settings',
+      eventSeq: 5,
+      blocked: false
+    });
+    globalThis.fetch = (async () => new Response('{}', { status: 402 })) as never;
+
+    goal.startGoalDraft({ sessionId: session.id, conversationId: 'c-owed-after-settings', turnId: 'g-owed-settings' });
+    const failure = await settled('c-owed-after-settings');
+    expect(failure.retryable).toBe(false);
+    expect(goal.ackGoalDraft('c-owed-after-settings', failure.token)).toBe(true);
+
+    // The user fixing their balance must find the turn it was owed for still owed.
+    expect(goal.goalPendingReplyFor('c-owed-after-settings')).toMatchObject({
+      turnId: 'g-owed-settings'
+    });
+  });
+
+  it('keeps the reply obligation pending when the draft payload ages past its ten-minute TTL', async () => {
+    const session = await createSession({ title: 'goal', conversationId: 'c-owed-after-ttl' });
+    await appendEvent(session.id, {
+      time: 1_000,
+      source: 'extension',
+      kind: 'user_message',
+      message: { text: 'keep going', truncated: false, chars: 10 }
+    });
+    await goal.acceptGoalReplyNow({
+      conversationId: 'c-owed-after-ttl',
+      sessionId: session.id,
+      replyId: 'assistant-owed-after-ttl',
+      turnId: 'g-owed-ttl',
+      eventSeq: 9,
+      blocked: false
+    });
+    globalThis.fetch = (async () => stream([delta('one last correction'), 'data: [DONE]\n'])) as never;
+
+    goal.startGoalDraft({ sessionId: session.id, conversationId: 'c-owed-after-ttl', turnId: 'g-owed-ttl' });
+    expect((await settled('c-owed-after-ttl')).stage).toBe('ready');
+
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 11 * 60_000);
+    try {
+      // Reading the view is what runs the payload expiry. It may drop the text; it may not
+      // decide, on a clock, that a turn nobody answered has been answered.
+      expect(goal.goalViewFor('c-owed-after-ttl')).toBeNull();
+      expect(goal.goalPendingReplyFor('c-owed-after-ttl')).toMatchObject({ turnId: 'g-owed-ttl' });
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it('discharges the reply obligation only once the page acknowledges a real decision', async () => {
+    const session = await createSession({ title: 'goal', conversationId: 'c-owed-until-typed' });
+    await appendEvent(session.id, {
+      time: 1_000,
+      source: 'extension',
+      kind: 'user_message',
+      message: { text: 'keep going', truncated: false, chars: 10 }
+    });
+    await goal.acceptGoalReplyNow({
+      conversationId: 'c-owed-until-typed',
+      sessionId: session.id,
+      replyId: 'assistant-owed-until-typed',
+      turnId: 'g-owed-typed',
+      eventSeq: 11,
+      blocked: false
+    });
+    globalThis.fetch = (async () => stream([delta('one last correction'), 'data: [DONE]\n'])) as never;
+
+    goal.startGoalDraft({ sessionId: session.id, conversationId: 'c-owed-until-typed', turnId: 'g-owed-typed' });
+    const ready = await settled('c-owed-until-typed');
+    expect(ready.stage).toBe('ready');
+    // Still owed while the page holds the message but has not written it.
+    expect(goal.goalPendingReplyFor('c-owed-until-typed')).toMatchObject({ turnId: 'g-owed-typed' });
+
+    expect(goal.ackGoalDraft('c-owed-until-typed', ready.token)).toBe(true);
+    expect(goal.goalPendingReplyFor('c-owed-until-typed')).toBeNull();
+  });
+
+  /**
+   * A chat with no answer of its own follows the app's, and one with an answer keeps it.
+   *
+   * That inheritance is the whole design. Nothing anyone has ever opened changes behaviour on
+   * upgrade, the app-wide switch stays the default every new chat starts from, and a chat that
+   * has been told "not you" cannot be talked back into it by a later change somewhere else.
+   */
+  it('lets one chat answer the Goal switch for itself, and leaves the rest inheriting', async () => {
+    expect(goal.goalSwitchFor('c-switch-quiet')).toEqual({ enabled: true, mode: 'goal', own: false, afterTurn: false });
+
+    expect(await goal.setGoalSwitchNow('c-switch-loud', 'loop', true)).toEqual({ enabled: true, mode: 'loop' });
+    expect(goal.goalSwitchFor('c-switch-loud')).toEqual({ enabled: true, mode: 'loop', own: true, afterTurn: false });
+    expect(goal.goalDrivingMode('c-switch-loud')).toBe('loop');
+    // Its neighbour, and the app-wide setting the neighbour still follows, are untouched.
+    expect(goal.goalSwitchFor('c-switch-quiet')).toEqual({ enabled: true, mode: 'goal', own: false, afterTurn: false });
+    expect(goal.goalDrivingMode('c-switch-quiet')).toBe('goal');
+
+    // Turning off the mode that is *not* running changes nothing, exactly as the app-wide
+    // switch behaves: the two controls are one setting, and only the running one can be shut.
+    expect(await goal.setGoalSwitchNow('c-switch-loud', 'goal', false)).toEqual({ enabled: true, mode: 'loop' });
+    expect(await goal.setGoalSwitchNow('c-switch-loud', 'loop', false)).toEqual({ enabled: false, mode: 'loop' });
+    // Off stays off here while every other chat carries on — the thing the app-wide switch
+    // could never do, and the way an old chat is retired when it pops up again.
+    expect(goal.goalSwitchEnabledFor('c-switch-loud')).toBe(false);
+    expect(goal.goalSwitchEnabledFor('c-switch-quiet')).toBe(true);
+
+    // Mode survives being switched off, so turning Loop back on gives Loop back.
+    expect(await goal.setGoalSwitchNow('c-switch-loud', 'loop', true)).toEqual({ enabled: true, mode: 'loop' });
+  });
+
+  it('carries one chat\'s switch across a snapshot, a restore and a resume', async () => {
+    await goal.setGoalSwitchNow('c-switch-parent', 'loop', true);
+    const saved = goal.snapshotGoalSwitches();
+    goal.restoreGoalSwitches(null);
+    expect(goal.goalSwitchFor('c-switch-parent').own).toBe(false);
+
+    goal.restoreGoalSwitches(saved);
+    expect(goal.goalSwitchFor('c-switch-parent')).toEqual({ enabled: true, mode: 'loop', own: true, afterTurn: false });
+
+    // Compact & Resume replaces the conversation and the loop goes on running in its
+    // replacement; leaving the override behind would hand chat B back to the app-wide setting.
+    expect(goal.moveGoalSwitch('c-switch-parent', 'c-switch-child')).toBe(true);
+    expect(goal.goalSwitchFor('c-switch-parent').own).toBe(false);
+    expect(goal.goalSwitchFor('c-switch-child')).toEqual({ enabled: true, mode: 'loop', own: true, afterTurn: false });
+
+    // The app's own switch going off is the master stop and reaches every override there is.
+    goal.clearAllGoalSwitches();
+    expect(goal.goalSwitchFor('c-switch-child').own).toBe(false);
+  });
+
+  /**
+   * The Off half of the same carry, which is the half that only started meaning anything once
+   * a chat's own switch outranked its saved goal.
+   *
+   * Compact & Resume is the one place a chat changes identity, and both halves of what the
+   * user chose have to arrive in the replacement: the sentence, and the answer to whether it
+   * is running. An Off left behind would hand chat B back to the app-wide setting with the
+   * goal still written down — which is the exact state that reads as on.
+   */
+  it('carries a chosen Off, and its goal, into the chat that replaces it', async () => {
+    await goal.setGoalSwitchNow('c-off-parent', 'goal', false);
+    goal.setGoalObjective('c-off-parent', 'port the module');
+    expect(goal.goalSwitchFor('c-off-parent')).toMatchObject({ enabled: false, own: true });
+    expect(goal.goalArmedFor('c-off-parent')).toBe(false);
+
+    expect(goal.moveGoalObjective('c-off-parent', 'c-off-child')).toBe(true);
+    expect(goal.moveGoalSwitch('c-off-parent', 'c-off-child')).toBe(true);
+
+    // Still stopped, still carrying the sentence it was stopped on, and still this chat's own
+    // answer rather than the app-wide one.
+    expect(goal.goalSwitchFor('c-off-child')).toMatchObject({ enabled: false, own: true });
+    expect(goal.goalObjectiveFor('c-off-child')).toBe('port the module');
+    expect(goal.goalArmedFor('c-off-child')).toBe(false);
+
+    // And starting it again in the replacement picks the same goal back up, unretyped.
+    await goal.setGoalSwitchNow('c-off-child', 'loop', true);
+    expect(goal.goalArmedFor('c-off-child')).toBe(true);
+    expect(goal.goalObjectiveFor('c-off-child')).toBe('port the module');
+  });
+
+  it('moves the same objective to the replacement chat on resume', () => {
+    goal.setGoalObjective('c-obj-parent', 'finish the release unattended');
+
+    expect(goal.moveGoalObjective('c-obj-parent', 'c-obj-child')).toBe(true);
+    expect(goal.goalObjectiveFor('c-obj-parent')).toBe('');
+    expect(goal.goalObjectiveFor('c-obj-child')).toBe('finish the release unattended');
+  });
+
+  /**
+   * A goal is a brief somebody writes, and it used to be cut at 4,000 characters — silently,
+   * because the sheet reported back what was stored and the reader had no reason to count.
+   * A long brief is now stored whole; the request that carries it is bounded by the same
+   * body limit as every other route, which is a transport rule rather than a rule about
+   * what a goal may say.
+   */
+  it('trims what it stores, keeps a long brief whole, and reports back what it stored', () => {
+    expect(goal.setGoalObjective('c-obj-trim', '   finish the docs   ')).toBe('finish the docs');
+    expect(goal.goalObjectiveFor('c-obj-trim')).toBe('finish the docs');
+    expect(goal.setGoalObjective('c-obj-trim', 'x'.repeat(9_000))).toHaveLength(9_000);
+    expect(goal.goalObjectiveFor('c-obj-trim')).toHaveLength(9_000);
+    expect(goal.setGoalObjective('c-obj-trim', '  ')).toBe('');
+    expect(goal.goalObjectiveFor('c-obj-trim')).toBe('');
+  });
+
+  /**
+   * A draft is frozen with the goal it was started under, so replacing the goal has to reach
+   * the request already in flight — otherwise the last thing typed into the chat is a message
+   * written against the goal the user just replaced.
+   */
+  it('retires the draft in flight when the goal changes', async () => {
+    const session = await createSession({ title: 'goal', conversationId: 'c-obj-swap' });
+    await appendEvent(session.id, {
+      time: 1_000,
+      source: 'extension',
+      kind: 'user_message',
+      message: { text: 'go', truncated: false, chars: 2 }
+    });
+    globalThis.fetch = (async () => new Promise<Response>(() => undefined)) as never;
+
+    goal.startGoalDraft({ sessionId: session.id, conversationId: 'c-obj-swap', turnId: 'g-obj-swap' });
+    expect(goal.goalViewFor('c-obj-swap')).not.toBeNull();
+    expect(goal.retireGoalDraftsFor('c-obj-swap')).toBe(true);
+    expect(goal.goalViewFor('c-obj-swap')).toBeNull();
+    // …and only that chat's, and only once.
+    expect(goal.retireGoalDraftsFor('c-obj-swap')).toBe(false);
+  });
+});
+
+/**
+ * The opening message of a chat ChatGPT has not named yet.
+ *
+ * No conversation id exists to key a draft to, because sending this very message is what
+ * makes ChatGPT issue one. It therefore runs outside the draft map entirely — and still has
+ * to go through the same protocol guard, the same caps and the same typing pass as every
+ * other message this app puts into somebody's chat.
+ */
+describe('opening a chat on a goal', () => {
+  it('preserves Retry-After without retrying ambiguous browser sends', async () => {
+    globalThis.fetch = (async () => new Response('busy', { status: 429, headers: { 'Retry-After': '37' } })) as never;
+    const result = await goal.draftOpeningMessage('Implement the change');
+    expect(result).toMatchObject({ retryable: true, retryAfterMs: 37000 });
+    if (!('error' in result)) throw new Error('expected rate limit');
+    expect(goal.nativeGoalFailure(result.error, 'api', result.retryAfterMs)).toMatchObject({ retryable: true, retryAfterMs: 37000 });
+    expect(goal.nativeGoalFailure(result.error, 'chatgpt')).toMatchObject({ retryable: false });
+    expect(goal.nativeGoalFailure('auth_rejected: bad key', 'api')).toMatchObject({ retryable: false });
+  });
+
+  it('writes the first message from the goal alone', async () => {
+    let seen: { role: string; content: string }[] = [];
+    globalThis.fetch = (async (_url: string, init: RequestInit) => {
+      seen = (JSON.parse(String(init.body)) as { messages: typeof seen }).messages;
+      return decision('continue', 'rewrite the parser in rust — start with the lexer');
+    }) as never;
+
+    const drafted = await goal.draftOpeningMessage('  rewrite the parser in rust  ');
+
+    expect(drafted).toEqual({
+      reply: goal.humanReply('rewrite the parser in rust — start with the lexer'),
+      model: 'deepseek/deepseek-v4-flash'
+    });
+    expect(seen[0]!.content).toBe(prompts.DEFAULT_GOAL_OBJECTIVE_SYSTEM_PROMPT);
+    expect(seen[1]!.content).toContain('rewrite the parser in rust');
+    // Trimmed on the way in, so stray whitespace is not part of the goal it prompts against.
+    expect(seen[1]!.content).not.toContain('  rewrite');
+    expect(referenceTranscript(seen)).toEqual([
+      { role: 'user', content: prompts.GOAL_OBJECTIVE_OPENING_TURN }
+    ]);
+    // The opening message runs outside the draft map but through the same assembly, closing
+    // reminder included — that sameness is the point of sharing one request builder.
+    expect(seen.at(-1)!.content).toBe(prompts.GOAL_OBJECTIVE_TRAILER);
+  });
+
+  /**
+   * Stopping before a word has been said is the model refusing the goal, not meeting it.
+   * An empty opening message would leave somebody looking at a chat that never started.
+   */
+  it('refuses to open with nothing', async () => {
+    globalThis.fetch = (async () => decision('stop')) as never;
+    expect(await goal.draftOpeningMessage('finish it')).toEqual({ error: 'nothing_to_open_with' });
+    expect(await goal.draftOpeningMessage('   ')).toEqual({ error: 'no_objective' });
+  });
+
+  /**
+   * The mode the sheet chose, for the one message that has no chat to read a switch from.
+   *
+   * A New Chat has no conversation and therefore no per-chat switch, so this used to draft
+   * under the app-wide setting — which is how a run started from "add specific loop" could be
+   * opened, and then continued, as a Goal that was free to decide it was finished.
+   */
+  it('opens under the mode it was given rather than the standing switch', async () => {
+    await saveConfig({
+      ...defaultConfig(),
+      goal: { ...defaultConfig().goal, backend: 'api', loopBackend: 'api', model: 'deepseek/deepseek-v4-flash', enabled: false, mode: 'goal' }
+    });
+    let sent: Record<string, unknown> = {};
+    globalThis.fetch = (async (_url: string, init: RequestInit) => {
+      sent = JSON.parse(String(init.body)) as Record<string, unknown>;
+      return decision('continue', 'start with the chunk mesher');
+    }) as never;
+
+    await goal.draftOpeningMessage('build the voxel sandbox', 'loop');
+
+    const messages = sent['messages'] as Array<{ role: string; content: string }>;
+    expect(messages[0]!.content).toBe(prompts.DEFAULT_GOAL_LOOP_SYSTEM_PROMPT);
+    // The schema goes with the instruction: in loop mode the enum has no way to spell a stop,
+    // so the mode is enforced at the wire as well as asked for in words.
+    expect(JSON.stringify(sent['response_format'])).toContain('always continue');
+    // And the closing reminder is the loop's, which is where a model that only read the last
+    // thing it was shown is told that stopping is not one of its moves.
+    expect(messages.at(-1)!.content).toBe(prompts.GOAL_LOOP_TRAILER);
+  });
+});
+/**
+ * Loop mode: Goal with the stop taken away.
+ *
+ * Everything else about it is deliberately the same request — same key, same model, same
+ * context, same reply hygiene — so what is worth pinning here is only the difference, and the
+ * difference is a promise: with Loop on, a finished turn always gets a message back. Three
+ * things have to hold for that promise to be real, and all three are tested below.
+ *
+ *   · The model is not offered a way to stop, in the instruction *and* in the schema.
+ *   · A stop that arrives anyway is asked again rather than accepted.
+ *   · A model that will not write is a failure the page can retry, never a sentence this app
+ *     wrote and attributed to it.
+ */
+describe('the loop that never stops', () => {
+  const loopMode = async (): Promise<void> => {
+    await saveConfig({
+      ...defaultConfig(),
+      goal: {
+        ...defaultConfig().goal, backend: 'api', loopBackend: 'api',
+        enabled: true,
+        mode: 'loop',
+        model: 'deepseek/deepseek-v4-flash'
+      }
+    });
+  };
+
+  const seed = async (conversationId: string): Promise<string> => {
+    const session = await createSession({ title: 'loop', conversationId });
+    await appendEvent(session.id, {
+      time: 1_000,
+      source: 'extension',
+      kind: 'user_message',
+      message: { text: 'build the parser', truncated: false, chars: 16 }
+    });
+    await appendEvent(session.id, {
+      time: 1_100,
+      source: 'extension',
+      kind: 'assistant_message',
+      final: true,
+      message: { text: 'all done, everything works', truncated: false, chars: 26 }
+    });
+    return session.id;
+  };
+
+  it('sends the loop instruction, its own trailer, and a schema with no stop in it', async () => {
+    await loopMode();
+    const sessionId = await seed('c-loop-1');
+    let body: any = null;
+    globalThis.fetch = (async (_url: string, init: RequestInit) => {
+      body = JSON.parse(String(init.body));
+      return decision('continue', 'go over the whole thing again and tell me what changed');
+    }) as never;
+
+    await recordLoopMcpProof(sessionId, 'g-loop-1');
+    goal.startGoalDraft({ sessionId, conversationId: 'c-loop-1', turnId: 'g-loop-1' });
+    const view = await settled('c-loop-1');
+
+    expect(view.stage).toBe('ready');
+    const system = body.messages
+      .filter((message: { role: string }) => message.role === 'system')
+      .map((message: { content: string }) => message.content);
+    expect(system[0]).toBe(goal.goalLoopPrompt());
+    // Neither of the other two instructions comes along: one would tell the model it may stop
+    // while the other tells it it may not.
+    expect(system.join('\n')).not.toContain('You have exactly two moves');
+    expect(system[1]).toContain('Action is always "continue"');
+    expect(body.messages.at(-1).content).toBe(prompts.GOAL_LOOP_TRAILER);
+    // The app's half of the same promise, made where a model cannot argue with it.
+    expect(body.response_format.json_schema.schema.properties.action.enum).toEqual(['continue']);
+  });
+
+  // CodeRabbit on #1924: without a schema, Loop's JSON is asked for in words that never offer "stop".
+  it('asks a custom endpoint without a schema for a continue-only answer in Loop', async () => {
+    await loopMode();
+    const loop = getConfig().goal;
+    await saveConfig({ ...getConfig(), goal: { ...loop, provider: { kind: 'custom', baseUrl: 'https://format-loop.example/v1' } } });
+    const sessionId = await seed('c-loop-format');
+    const sent: any[] = [];
+    globalThis.fetch = (async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body));
+      sent.push(body);
+      if (body.response_format?.type === 'json_schema') return Response.json({ error: { message: 'This response_format type is unavailable now' } }, { status: 400 });
+      return decision('continue', 'go over it again');
+    }) as never;
+    await recordLoopMcpProof(sessionId, 'g-loop-format');
+    goal.startGoalDraft({ sessionId, conversationId: 'c-loop-format', turnId: 'g-loop-format' });
+    expect((await settled('c-loop-format')).stage).toBe('ready');
+    const words = sent[1].messages.at(-1).content as string;
+    expect(words).toContain('"action": "continue"');
+    expect(words).not.toContain('stop');
+  });
+
+  it('keeps a chat’s own goal in front of the loop', async () => {
+    await loopMode();
+    const sessionId = await seed('c-loop-goal');
+    goal.setGoalObjective('c-loop-goal', 'port the module and keep the suite green');
+    let body: any = null;
+    globalThis.fetch = (async (_url: string, init: RequestInit) => {
+      body = JSON.parse(String(init.body));
+      return decision('continue', 'the suite is still red. fix it');
+    }) as never;
+
+    await recordLoopMcpProof(sessionId, 'g-loop-goal');
+    goal.startGoalDraft({ sessionId, conversationId: 'c-loop-goal', turnId: 'g-loop-goal' });
+    expect((await settled('c-loop-goal')).stage).toBe('ready');
+
+    const system = body.messages
+      .filter((message: { role: string }) => message.role === 'system')
+      .map((message: { content: string }) => message.content);
+    expect(system[0]).toBe(goal.goalLoopPrompt());
+    expect(system[1]).toContain('port the module and keep the suite green');
+    // Loop replaces the instruction, not the goal — so the driver's own prompt stays out.
+    expect(system.join('\n')).not.toContain('stop, by answering exactly NO_REPLY');
+  });
+
+  /**
+   * The mode is a thing the user switched on, so it is never inherited. A chat that runs only
+   * because it carries its own goal, with the standing switch off, is still a Goal run — and
+   * Goal is the half of this pair that is allowed to decide the job is finished.
+   */
+  it('is not entered by a chat that only carries its own goal while the switch is off', async () => {
+    await saveConfig({
+      ...defaultConfig(),
+      goal: { ...defaultConfig().goal, backend: 'api', loopBackend: 'api', enabled: false, mode: 'loop', model: 'deepseek/deepseek-v4-flash' }
+    });
+    const sessionId = await seed('c-loop-off');
+    goal.setGoalObjective('c-loop-off', 'get the release out');
+    let body: any = null;
+    globalThis.fetch = (async (_url: string, init: RequestInit) => {
+      body = JSON.parse(String(init.body));
+      return decision('stop');
+    }) as never;
+
+    goal.startGoalDraft({ sessionId, conversationId: 'c-loop-off', turnId: 'g-loop-off' });
+    const view = await settled('c-loop-off');
+
+    // Stopping is available again, and it was asked exactly once.
+    expect(view.stage).toBe('no-reply');
+    expect(body.messages[0].content).toBe(goal.goalObjectivePrompt());
+    expect(body.response_format.json_schema.schema.properties.action.enum).toEqual(['stop', 'continue']);
+  });
+
+  /**
+   * Structured output already removes the word, so a stop reaching the app means the model
+   * wrote the sentinel into the message text. That is a malformed answer, and the repair is
+   * to ask again with the refusal spelled out — never to invent the message ourselves.
+   */
+  it('asks again when the loop tries to stop, and uses the message it writes next', async () => {
+    await loopMode();
+    const sessionId = await seed('c-loop-retry');
+    const bodies: any[] = [];
+    globalThis.fetch = (async (_url: string, init: RequestInit) => {
+      bodies.push(JSON.parse(String(init.body)));
+      return bodies.length === 1 ? decision('continue', 'NO_REPLY') : decision('continue', 'keep going, the export is missing');
+    }) as never;
+
+    await recordLoopMcpProof(sessionId, 'g-loop-retry');
+    goal.startGoalDraft({ sessionId, conversationId: 'c-loop-retry', turnId: 'g-loop-retry' });
+    const view = await settled('c-loop-retry');
+
+    expect(view.stage).toBe('ready');
+    expect(view.reply).toBe(goal.humanReply('keep going, the export is missing'));
+    expect(bodies).toHaveLength(2);
+    // The second attempt is the first one plus the refusal, so the model is told exactly what
+    // was wrong with the answer it just gave.
+    const second = bodies[1].messages
+      .filter((message: { role: string }) => message.role === 'system')
+      .map((message: { content: string }) => message.content);
+    expect(second).toContain(prompts.GOAL_LOOP_STOP_REFUSED);
+  });
+
+  it('gives up retryably rather than typing a sentence the model never wrote', async () => {
+    await loopMode();
+    const sessionId = await seed('c-loop-refused');
+    let asked = 0;
+    globalThis.fetch = (async () => {
+      asked += 1;
+      return decision('continue', 'NO_REPLY');
+    }) as never;
+
+    await recordLoopMcpProof(sessionId, 'g-loop-refused');
+    goal.startGoalDraft({ sessionId, conversationId: 'c-loop-refused', turnId: 'g-loop-refused' });
+    const view = await settled('c-loop-refused');
+
+    // Bounded: a chat that will not answer must not spend the key in a circle.
+    expect(asked).toBe(3);
+    expect(view.stage).toBe('failed');
+    expect(view.error).toBe('loop_stop_refused');
+    expect(view.reply).toBe('');
+    // The turn is still owed an answer, so the page may ask again on its own clock. This is
+    // the one thing that keeps the promise honest across a model having a bad minute.
+    expect(view.retryable).toBe(true);
+  });
+
+  it('writes the opening message of a new chat under the loop instruction too', async () => {
+    await loopMode();
+    const seen: { role: string; content: string }[] = [];
+    globalThis.fetch = (async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body)) as { messages: { role: string; content: string }[] };
+      seen.push(...body.messages);
+      return decision('continue', 'start on the scraper, one row per product');
+    }) as never;
+
+    const drafted = await goal.draftOpeningMessage('scrape the prices into a csv');
+
+    expect(drafted).toEqual({
+      reply: goal.humanReply('start on the scraper, one row per product'),
+      model: 'deepseek/deepseek-v4-flash'
+    });
+    expect(seen[0]!.content).toBe(goal.goalLoopPrompt());
+    expect(seen[1]!.content).toContain('scrape the prices into a csv');
+  });
+});
+
+it('publishes actual opening response deltas before one validated final result', async () => {
+  let controller!: ReadableStreamDefaultController<Uint8Array>;
+  const body = new ReadableStream<Uint8Array>({ start(value) { controller = value; } });
+  let requested: any;
+  globalThis.fetch = (async (_url: unknown, init: RequestInit) => {
+    requested = JSON.parse(String(init.body));
+    return new Response(body, { headers: { 'content-type': 'text/event-stream' } });
+  }) as never;
+  const updates = vi.fn();
+  const result = goal.draftOpeningMessage('Inspect then implement', 'goal', updates);
+  await vi.waitFor(() => expect(requested?.stream).toBe(true));
+  const encoder = new TextEncoder();
+  const emit = (content: string) => controller.enqueue(encoder.encode(`data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`));
+  emit('{"action":"continue","reply":"Inspect');
+  await vi.waitFor(() => expect(updates).toHaveBeenCalledWith({ phase: 'generating', text: '{"action":"continue","reply":"Inspect' }));
+  let completed = false; void result.then(() => { completed = true; });
+  expect(completed).toBe(false);
+  emit(' then implement"}'); controller.enqueue(encoder.encode('data: [DONE]\n\n')); controller.close();
+  expect(await result).toMatchObject({ reply: goal.humanReply('Inspect then implement') });
+});
+
+it('keeps Astra Goal finish-only while the finish tool is enabled and after-turn is not selected', async () => {
+  const config = (await import('../src/main/config.js')).getConfig();
+  await saveConfig({ ...config, ui: { ...config.ui, finishTool: true } });
+  const conversationId = 'aaaaaaaa-1111-4222-8333-123456789abc';
+  const session = await createSession({ conversationId, title: 'Astra finish-only' });
+  await observeSessionModel(session.id, conversationId, 'gpt-6-pro', Date.now());
+  await goal.setGoalSwitchNow(conversationId, 'goal', true);
+  await goal.acceptGoalReplyNow({ conversationId, sessionId: session.id, replyId: 'astra-final', turnId: 'astra-turn', eventSeq: 1, blocked: false });
+  expect(goal.goalPendingReplyFor(conversationId)).toBeNull();
+  const fetch = vi.fn(); globalThis.fetch = fetch;
+  const draft = goal.startGoalDraft({ conversationId, sessionId: session.id, turnId: 'astra-turn' });
+  goal.beginGoalDraft(conversationId, draft.token);
+  await vi.waitFor(() => expect(goal.goalViewFor(conversationId)?.stage).toBe('no-reply'));
+  expect(fetch).not.toHaveBeenCalled();
+});
+
+it.each(['goal', 'loop'] as const)('runs Astra %s through its ordinary decision after a turn when finish is disabled or after-turn is selected', async mode => {
+  const config = (await import('../src/main/config.js')).getConfig();
+  for (const finishTool of [false, true]) {
+    await saveConfig({ ...config, ui: { ...config.ui, finishTool } });
+    const conversationId = `astra-${mode}-${finishTool}`;
+    const session = await createSession({ conversationId });
+    await observeSessionModel(session.id, conversationId, 'gpt-6-pro', Date.now());
+    await goal.setGoalSwitchNow(conversationId, mode, true, finishTool);
+    await appendEvent(session.id, { kind: 'user_message', source: 'extension', time: Date.now(),
+      message: { text: 'Finish the requested checks', chars: 27, truncated: false } });
+    await recordLoopMcpProof(session.id, 'astra-turn');
+    await goal.acceptGoalReplyNow({ conversationId, sessionId: session.id, replyId: 'astra-final', turnId: 'astra-turn', eventSeq: 10, blocked: false });
+    expect(goal.goalPendingReplyFor(conversationId)?.replyId).toBe('astra-final');
+    const fetcher = vi.fn(async (_url: unknown, init: RequestInit) => {
+      const body = JSON.parse(String(init.body));
+      expect(body.messages[0].content).toBe(mode === 'goal' ? config.goal.prompt : config.goal.loopPrompt);
+      return decision(mode === 'goal' ? 'stop' : 'continue', mode === 'loop' ? 'Continue the requested checks' : '');
+    });
+    globalThis.fetch = fetcher as typeof fetch;
+    goal.startGoalDraft({ conversationId, sessionId: session.id, turnId: 'astra-turn' });
+    expect((await settled(conversationId)).stage).toBe(mode === 'goal' ? 'no-reply' : 'ready');
+    expect(fetcher).toHaveBeenCalledOnce();
+  }
+});
+
+describe('a custom OpenAI-compatible provider', () => {
+  async function useCustom(over: Record<string, unknown> = {}): Promise<void> {
+    await saveConfig({
+      ...defaultConfig(),
+      goal: {
+        ...defaultConfig().goal,
+        enabled: true,
+        // The api backend is the only one that fetches; the other backends never read
+        // the provider block.
+        backend: 'api',
+        loopBackend: 'api',
+        model: 'llama3.1',
+        reasoning: 'default',
+        provider: { kind: 'custom', baseUrl: 'http://localhost:11434/v1' },
+        ...over
+      }
+    });
+    // Keyless unless the test stores one: a local server usually needs no secret, and the
+    // OpenRouter key from the outer beforeEach must never leak into a custom request.
+    await setSecret('customProviderApiKey', '');
+  }
+
+  async function userSession(conversationId: string): Promise<{ id: string }> {
+    const session = await createSession({ title: 'goal', conversationId });
+    await appendEvent(session.id, {
+      time: 1_000,
+      source: 'extension',
+      kind: 'user_message',
+      message: { text: 'build the parser', truncated: false, chars: 16 }
+    });
+    return session;
+  }
+
+  // #1921: DeepSeek answers HTTP 400 "This response_format type is unavailable now" to json_schema,
+  // and Goal retried the same request forever. A custom endpoint that refuses the format gets
+  // json_object, then no format, with the JSON asked for in words; the answer is validated as before.
+  const refuses = (types: string[]) => {
+    const sent: any[] = [];
+    globalThis.fetch = (async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body));
+      sent.push(body);
+      if (types.includes(body.response_format?.type ?? 'none')) {
+        return Response.json({ error: { message: 'This response_format type is unavailable now' } }, { status: 400 });
+      }
+      return decision('continue', 'check the tokenizer first');
+    }) as never;
+    return sent;
+  };
+  it('falls back to json_object when a custom endpoint refuses json_schema, and remembers it', async () => {
+    await useCustom({ provider: { kind: 'custom', baseUrl: 'https://format-a.example/v1' } });
+    const sent = refuses(['json_schema']);
+    goal.startGoalDraft({ sessionId: (await userSession('c-format-1')).id, conversationId: 'c-format-1', turnId: 'g-1' });
+    expect((await settled('c-format-1')).stage).toBe('ready');
+    expect(sent.map(body => body.response_format?.type)).toEqual(['json_schema', 'json_object']);
+    // The JSON is asked for in words too: json_object carries no schema.
+    expect(sent[1].messages.at(-1)).toEqual({ role: 'system', content: expect.stringContaining('{"action": "stop" or "continue"') });
+    expect(sent[0].messages.some((message: any) => message.content.includes('{"action": "stop" or "continue"'))).toBe(false);
+    // The next decision for this endpoint goes straight to what it accepts.
+    goal.startGoalDraft({ sessionId: (await userSession('c-format-2')).id, conversationId: 'c-format-2', turnId: 'g-1' });
+    expect((await settled('c-format-2')).stage).toBe('ready');
+    expect(sent.map(body => body.response_format?.type)).toEqual(['json_schema', 'json_object', 'json_object']);
+  });
+
+  // CodeRabbit on #1924: refusals are worded in many ways, and what one model accepts says nothing about another.
+  it('recognizes a refusal in plain words, and learns the format per model', async () => {
+    await useCustom({ provider: { kind: 'custom', baseUrl: 'https://format-d.example/v1' }, model: 'model-a' });
+    const sent: any[] = [];
+    globalThis.fetch = (async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body));
+      sent.push(body);
+      if (body.response_format?.type === 'json_schema') return Response.json({ error: { message: 'Response format is not supported for this model' } }, { status: 400 });
+      return decision('continue', 'go on');
+    }) as never;
+    goal.startGoalDraft({ sessionId: (await userSession('c-format-5')).id, conversationId: 'c-format-5', turnId: 'g-1' });
+    expect((await settled('c-format-5')).stage).toBe('ready');
+    expect(sent.map(body => `${body.model}:${body.response_format?.type}`)).toEqual(['model-a:json_schema', 'model-a:json_object']);
+    await useCustom({ provider: { kind: 'custom', baseUrl: 'https://format-d.example/v1' }, model: 'model-b' });
+    goal.startGoalDraft({ sessionId: (await userSession('c-format-6')).id, conversationId: 'c-format-6', turnId: 'g-1' });
+    expect((await settled('c-format-6')).stage).toBe('ready');
+    // Model B starts from the schema again.
+    expect(sent.slice(2).map(body => `${body.model}:${body.response_format?.type}`)).toEqual(['model-b:json_schema', 'model-b:json_object']);
+  });
+
+  it('sends no response_format when a custom endpoint refuses json_object too', async () => {
+    await useCustom({ provider: { kind: 'custom', baseUrl: 'https://format-b.example/v1' } });
+    const sent = refuses(['json_schema', 'json_object']);
+    goal.startGoalDraft({ sessionId: (await userSession('c-format-3')).id, conversationId: 'c-format-3', turnId: 'g-1' });
+    expect((await settled('c-format-3')).stage).toBe('ready');
+    expect(sent.map(body => body.response_format?.type ?? 'none')).toEqual(['json_schema', 'json_object', 'none']);
+  });
+
+  it('keeps any other HTTP 400 from a custom endpoint a plain failure, asked once', async () => {
+    await useCustom({ provider: { kind: 'custom', baseUrl: 'https://format-c.example/v1' } });
+    const sent: any[] = [];
+    globalThis.fetch = (async (_url: string, init: RequestInit) => {
+      sent.push(JSON.parse(String(init.body)));
+      return Response.json({ error: { message: 'Model llama9 does not exist' } }, { status: 400 });
+    }) as never;
+    goal.startGoalDraft({ sessionId: (await userSession('c-format-4')).id, conversationId: 'c-format-4', turnId: 'g-1' });
+    expect((await settled('c-format-4')).stage).toBe('failed');
+    expect(sent).toHaveLength(1);
+  });
+
+  it('posts plain chat completions with no vendor fields and no key when keyless', async () => {
+    await useCustom();
+    const session = await userSession('c-custom-1');
+    let sent: any = null;
+    globalThis.fetch = (async (url: string, init: RequestInit) => {
+      sent = { url, headers: init.headers, body: JSON.parse(String(init.body)) };
+      return decision('continue', 'check the tokenizer first');
+    }) as never;
+
+    goal.startGoalDraft({ sessionId: session.id, conversationId: 'c-custom-1', turnId: 'g-1' });
+    const view = await settled('c-custom-1');
+
+    expect(view.stage).toBe('ready');
+    expect(sent.url).toBe('http://localhost:11434/v1/chat/completions');
+    expect(sent.headers).not.toHaveProperty('authorization');
+    expect(sent.headers).not.toHaveProperty('HTTP-Referer');
+    expect(sent.headers).not.toHaveProperty('X-Title');
+    expect(sent.body.model).toBe('llama3.1');
+    // run() always streams to the panel consumer on this base; the bounded parse is unchanged.
+    expect(sent.body.stream).toBe(true);
+    expect(sent.body).not.toHaveProperty('plugins');
+    expect(sent.body).not.toHaveProperty('provider');
+    expect(sent.body).not.toHaveProperty('reasoning');
+    expect(sent.body.response_format).toMatchObject({
+      type: 'json_schema',
+      json_schema: { name: 'goal_decision', strict: true }
+    });
+  });
+
+  it('sends the custom key and the bare reasoning effort when both are configured', async () => {
+    await useCustom({ reasoning: 'high' });
+    await setSecret('customProviderApiKey', 'sk-custom-test');
+    const session = await userSession('c-custom-2');
+    let sent: any = null;
+    globalThis.fetch = (async (url: string, init: RequestInit) => {
+      sent = { url, headers: init.headers, body: JSON.parse(String(init.body)) };
+      return decision('stop');
+    }) as never;
+
+    goal.startGoalDraft({ sessionId: session.id, conversationId: 'c-custom-2', turnId: 'g-1' });
+    const view = await settled('c-custom-2');
+
+    expect(view.stage).toBe('no-reply');
+    expect((sent.headers as Record<string, string>).authorization).toBe('Bearer sk-custom-test');
+    // `exclude` is OpenRouter vocabulary; a custom endpoint gets the effort alone.
+    expect(sent.body.reasoning_effort).toBe('high');
+    expect(sent.body).not.toHaveProperty('reasoning');
+  });
+
+  it('fails settled on an invalid base URL instead of retrying forever', async () => {
+    await useCustom();
+    await saveConfig({
+      ...defaultConfig(),
+      goal: {
+        ...defaultConfig().goal,
+        enabled: true,
+        backend: 'api',
+        model: 'llama3.1',
+        provider: { kind: 'custom', baseUrl: 'nota url' }
+      }
+    });
+    const session = await userSession('c-custom-3');
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls++;
+      return decision('continue', 'never reached');
+    }) as never;
+
+    goal.startGoalDraft({ sessionId: session.id, conversationId: 'c-custom-3', turnId: 'g-1' });
+    const view = await settled('c-custom-3');
+
+    expect(view.stage).toBe('failed');
+    expect(view.error).toMatch(/^invalid_provider/);
+    expect(view.retryable).toBe(false);
+    expect(calls).toBe(0);
+  });
+
+  it('keeps a reserved draft endpoint, credential, model and reasoning together after settings change', async () => {
+    await useCustom({ reasoning: 'high' });
+    await setSecret('customProviderApiKey', 'sk-custom-reserved');
+    const session = await userSession('reserved-settings');
+    const draft = goal.startGoalDraft({ sessionId: session.id, conversationId: 'reserved-settings', turnId: 'g-1', deferStart: true });
+    await saveConfig({ ...defaultConfig(), goal: { ...defaultConfig().goal, enabled: true, backend: 'api', model: 'different-model', reasoning: 'low', provider: { kind: 'openrouter', baseUrl: '' } } });
+    const requests: Array<{ url: string; init: RequestInit }> = [];
+    globalThis.fetch = (async (url: string, init: RequestInit) => {
+      requests.push({ url, init });
+      return decision('stop');
+    }) as never;
+    expect(goal.beginGoalDraft('reserved-settings', draft.token)).toBe(true);
+    expect((await settled('reserved-settings')).stage).toBe('no-reply');
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.url).toBe('http://localhost:11434/v1/chat/completions');
+    expect(requests[0]?.init).toMatchObject({ redirect: 'error', headers: { authorization: 'Bearer sk-custom-reserved' } });
+    expect(JSON.parse(String(requests[0]?.init.body))).toMatchObject({ model: 'llama3.1', reasoning_effort: 'high' });
+  });
+
+  it('keeps a planner endpoint, credential and model together across an awaited settings change', async () => {
+    await useCustom();
+    await setSecret('customProviderApiKey', 'sk-custom-snapshot');
+    const secrets = await import('../src/main/secrets.js');
+    const readKey = secrets.getSecret;
+    const lookup = vi.spyOn(secrets, 'getSecret').mockImplementationOnce(async key => {
+      const value = await readKey(key);
+      const changed = defaultConfig();
+      await saveConfig({ ...changed, goal: { ...changed.goal, backend: 'api', model: 'different-model', provider: { kind: 'custom', baseUrl: 'https://new-endpoint.example/v1' } } });
+      return value;
+    });
+    const requests: Array<{ url: string; init: RequestInit }> = [];
+    globalThis.fetch = (async (url: string, init: RequestInit) => {
+      requests.push({ url, init });
+      return decision('continue', JSON.stringify({ stages: ['Implement the parser', 'Verify the parser'] }));
+    }) as never;
+    try {
+      expect(await goal.draftTaskPlan('Implement a parser', 'api')).toHaveLength(2);
+      expect(lookup).toHaveBeenCalledWith('customProviderApiKey');
+      expect(requests).toHaveLength(1);
+      expect(requests[0]?.url).toBe('http://localhost:11434/v1/chat/completions');
+      expect(requests[0]?.init).toMatchObject({ redirect: 'error', headers: { authorization: 'Bearer sk-custom-snapshot' } });
+      expect(JSON.parse(String(requests[0]?.init.body)).model).toBe('llama3.1');
+    } finally { lookup.mockRestore(); }
+  });
+
+  it('reads a vanilla OpenAI model list, and an empty one when unreachable', async () => {
+    await useCustom();
+    globalThis.fetch = (async (url: string) => {
+      expect(String(url)).toBe('http://localhost:11434/v1/models');
+      return Response.json({ data: [{ id: 'llama3.1' }, { id: 'qwen3:8b', created: 1_700_000_000 }] });
+    }) as never;
+    const page = await goal.listGoalModels(0, 20);
+    expect(page.models.map((model) => model.id).sort()).toEqual(['llama3.1', 'qwen3:8b']);
+    expect(page.models.find((model) => model.id === 'llama3.1')?.name).toBe('llama3.1');
+
+    globalThis.fetch = (async () => {
+      throw new TypeError('fetch failed');
+    }) as never;
+    // A different endpoint is a different cache scope, so this really exercises the
+    // failure path rather than the five-minute catalogue cache from the fetch above.
+    await saveConfig({
+      ...defaultConfig(),
+      goal: {
+        ...defaultConfig().goal,
+        enabled: true,
+        model: 'llama3.1',
+        provider: { kind: 'custom', baseUrl: 'http://localhost:11435/v1' }
+      }
+    });
+    const empty = await goal.listGoalModels(0, 20);
+    expect(empty).toEqual({ models: [], total: 0 });
+  });
+
+  it('requires a key for OpenRouter but not for a custom endpoint', async () => {
+    await saveConfig({
+      ...defaultConfig(),
+      goal: {
+        ...defaultConfig().goal,
+        backend: 'api',
+        provider: { kind: 'custom', baseUrl: 'http://localhost:11434/v1' }
+      }
+    });
+    await setSecret('openRouterApiKey', '');
+    await setSecret('customProviderApiKey', '');
+    expect(await goal.goalKeyPresent()).toBe(true);
+
+    await saveConfig({
+      ...defaultConfig(),
+      goal: { ...defaultConfig().goal, backend: 'api', provider: { kind: 'openrouter', baseUrl: '' } }
+    });
+    expect(await goal.goalKeyPresent()).toBe(false);
+    await setSecret('openRouterApiKey', 'sk-or-test');
+    expect(await goal.goalKeyPresent()).toBe(true);
+  });
+
+  it('accepts https and loopback http base URLs and refuses the rest', () => {
+    const open = (baseUrl: string) => goal.resolveGoalBaseUrl({ kind: 'custom', baseUrl });
+    expect(open('https://llm.example.com/v1/')).toBe('https://llm.example.com/v1');
+    expect(open('http://localhost:11434/v1')).toBe('http://localhost:11434/v1');
+    expect(open('http://127.0.0.1:11434')).toBe('http://127.0.0.1:11434');
+    expect(open('http://[::1]:11434/v1')).toBe('http://[::1]:11434/v1');
+    for (const bad of ['notaurl', '', 'http://llm.example.com/v1', 'https://user:pass@llm.example.com/v1', 'ftp://llm.example.com', 'https://llm.example/v1?secret=value', 'https://llm.example/v1#route']) {
+      expect(() => open(bad), bad).toThrow(/^invalid_provider/);
+    }
+    expect(goal.resolveGoalBaseUrl({ kind: 'openrouter', baseUrl: '' })).toBe('https://openrouter.ai/api/v1');
+  });
+});
+
+describe('the original request reaches the helper verbatim', () => {
+  const starter = ' \nShip the importer.\n\n  1. keep the "legacy" flag: it must stay\n  2. no new deps\t(tabs matter)\nDone means: suite green, README updated.\n ';
+
+  async function chat(conversationId: string, first: string): Promise<string> {
+    const session = await createSession({ title: 'verbatim', conversationId });
+    await appendEvent(session.id, { time: 1_000, source: 'extension', kind: 'user_message', message: { text: first, truncated: false, chars: first.length } });
+    await appendEvent(session.id, { time: 1_100, source: 'extension', kind: 'assistant_message', final: true, message: { text: 'importer written, README pending', truncated: false, chars: 31 } });
+    await appendEvent(session.id, { time: 1_200, source: 'extension', kind: 'user_message', message: { text: 'also handle empty files', truncated: false, chars: 23 } });
+    return session.id;
+  }
+
+  /** Every system message of the outgoing request, plus the raw body for substring checks. */
+  function capture(): { system: string[]; raw: string } {
+    const box = { system: [] as string[], raw: '' };
+    globalThis.fetch = (async (_url: string, init: RequestInit) => {
+      box.raw = String(init.body);
+      box.system = (JSON.parse(box.raw) as { messages: { role: string; content: string }[] }).messages.filter(message => message.role === 'system').map(message => message.content);
+      return decision('continue', 'next step');
+    }) as never;
+    return box;
+  }
+
+  it.each(['goal', 'loop'] as const)('does not supplement a first user message already in the %s transcript', async mode => {
+    const conversationId = 'c-present-original';
+    const sessionId = await chat(conversationId, starter);
+    await recordLoopMcpProof(sessionId, 'g-present-original');
+    await goal.setGoalSwitchNow(conversationId, mode, true);
+    const box = capture();
+    goal.startGoalDraft({ sessionId, conversationId, turnId: 'g-present-original' });
+    expect((await settled(conversationId)).stage).toBe('ready');
+    expect(box.raw).not.toContain('Original request (reference):');
+    expect(referenceTranscript(JSON.parse(box.raw).messages)).toContainEqual({ role: 'user', content: starter.trim() });
+    expect(await goal.draftFastFollowup(sessionId, undefined, undefined, undefined, mode)).toBe('next step');
+    expect(box.raw).not.toContain('Original request (reference):');
+  });
+
+  it.each(['goal', 'loop'] as const)('supplements only an absent human original in %s prepared context', async mode => {
+    const sessionId = await chat('c-prepared-original', starter);
+    await recordLoopMcpProof(sessionId, 'g-prepared-original');
+    const box = capture();
+    for (const message of [
+      { role: 'user' as const, content: starter, present: true },
+      { role: 'user' as const, content: starter.trim(), present: true },
+      { role: 'user' as const, content: starter.replace('  1.', ' 1.'), present: false },
+      { role: 'assistant' as const, content: starter, present: false },
+      { role: 'user' as const, origin: 'automatic' as const, content: starter, present: false }
+    ]) {
+      const { present, ...row } = message;
+      const prepared = row.role === 'assistant' ? [row, { role: 'user' as const, content: 'Summary' }] : [row];
+      expect(await goal.draftFastFollowup(sessionId, undefined, prepared, undefined, mode)).toBe('next step');
+      expect(box.raw.includes('Original request (reference):')).toBe(!present);
+    }
+  });
+
+  it.each(['goal', 'loop'] as const)('keeps the later user correction newer than supplemental API original in %s', async mode => {
+    const conversationId = 'c-api-original-order';
+    const sessionId = await chat(conversationId, starter);
+    await recordLoopMcpProof(sessionId, 'api-original-order-turn');
+    await goal.setGoalSwitchNow(conversationId, mode, true);
+    const box = capture();
+    const correction = 'CURRENT HUMAN CORRECTION: do not use the legacy flag.';
+    expect(await goal.draftFastFollowup(sessionId, undefined,
+      [{ role: 'user', content: correction }], undefined, mode)).toBe('next step');
+    const outgoing = JSON.parse(box.raw).messages as { role: string; content: string }[];
+    const originalIndex = outgoing.findIndex(row => row.role === 'user' && row.content.includes('Original request (reference):'));
+    const conversationIndex = outgoing.findIndex(row => row.role === 'user' &&
+      row.content.includes(correction) && row.content.includes('The transcript below is reference data'));
+    expect(originalIndex).toBeGreaterThan(-1);
+    expect(conversationIndex).toBeGreaterThan(-1);
+    expect(originalIndex).toBeLessThan(conversationIndex);
+  });
+
+  it.each(['goal', 'loop'] as const)('shortens a first request over 60,000 characters and still decides in %s mode', async mode => {
+    const long = `START-MARKER ${'x'.repeat(60_000)} END-MARKER`;
+    const sessionId = await chat('c-verbatim-long', long);
+    const box = capture();
+    await recordLoopMcpProof(sessionId, 'g-verbatim-long');
+    await goal.setGoalSwitchNow('c-verbatim-long', mode, true);
+    goal.startGoalDraft({ sessionId, conversationId: 'c-verbatim-long', turnId: 'g-verbatim-long' });
+    expect((await settled('c-verbatim-long')).stage).toBe('ready');
+    expect(await goal.draftFastFollowup(sessionId, undefined, undefined, undefined, mode)).toBe('next step');
+    expect(box.raw).not.toContain('Original request (reference):');
+    expect(await goal.draftFastFollowup(sessionId, undefined, [{ role: 'user', content: 'Summary' }], undefined, mode)).toBe('next step');
+    const messages = JSON.parse(box.raw).messages as { content: string }[];
+    const original = messages.find(message => message.content.startsWith('Original request (reference)'))!.content;
+    expect(original).toContain('START-MARKER');
+    expect(original).toContain('END-MARKER');
+    expect(original).toMatch(/\d+ characters omitted/);
+    expect(original.length).toBeLessThan(20_300);
+  });
+
+  it.each(['saved fragment', 'saved fragment\n…[986 more characters stored in full as abcdef12.txt]'])('includes a recorder-truncated first request (%s) and still decides', async text => {
+    const session = await createSession({ title: 'truncated original', conversationId: 'c-truncated-original' });
+    await appendEvent(session.id, { time: 1_000, source: 'extension', kind: 'user_message', message: { text, truncated: true, chars: 1000 } });
+    const box = capture();
+    goal.startGoalDraft({ sessionId: session.id, conversationId: 'c-truncated-original', turnId: 'g-truncated-original' });
+    expect((await settled('c-truncated-original')).stage).toBe('ready');
+    expect(box.raw).toContain('saved fragment');
+    expect(box.raw).not.toContain('Original request (reference):');
+    expect(await goal.draftFastFollowup(session.id, undefined, [{ role: 'user', content: 'Summary' }], undefined, 'goal')).toBe('next step');
+    expect(box.raw).toContain('recorder');
+    expect(box.raw).toContain('full text is unavailable in this reference');
+    expect(box.raw).not.toContain('characters omitted before storage');
+    if (text.includes('986 more characters')) expect(box.raw).toContain('986 more characters');
+  });
+
+  it.each(['', 'x'])('clips Unicode at whole surrogate pairs with prefix %j and an exact omitted count', async prefix => {
+    const sessionId = await chat('c-unicode-original', prefix + '\u{1F600}'.repeat(20_000));
+    const box = capture();
+    expect(await goal.draftFastFollowup(sessionId, undefined, [{ role: 'user', content: 'Summary' }], undefined, 'goal')).toBe('next step');
+    const original = (JSON.parse(box.raw).messages as { content: string }[]).find(message => message.content.startsWith('Original request (reference)'))!.content;
+    expect(Buffer.from(original, 'utf8').toString('utf8')).toBe(original);
+    const kept = [...original.matchAll(/\u{1F600}/gu)].length * 2;
+    expect(original).toContain(`${40_000 - kept} characters omitted`);
+    expect(kept).toBeGreaterThan(19_000);
+  });
+
+  it('shortens a large first request when prepared context is a summary', async () => {
+    const big = `BEGIN ${'x'.repeat(58_000)} ${starter} FINISH`;
+    const sessionId = await chat('c-verbatim-big', big);
+    goal.setGoalObjective('c-verbatim-big', 'ship the importer');
+    const box = capture();
+    const prepared = [{ role: 'user' as const, content: 'Summary: importer work in progress' }];
+    expect(await goal.draftFastFollowup(sessionId, undefined, prepared, undefined, 'goal')).toBe('next step');
+    const original = (JSON.parse(box.raw) as { messages: { role: string; content: string }[] }).messages.find(message => message.role === 'user' && message.content.startsWith('Original request (reference)'));
+    expect(original?.content).toContain('BEGIN');
+    expect(original?.content).toContain('FINISH');
+    expect(original?.content).toMatch(/\d+ characters omitted/);
+    expect(original!.content.length).toBeLessThan(20_300);
+    expect(box.system.some(content => content.includes('[… cut …]'))).toBe(false);
+  });
+});

@@ -1,0 +1,232 @@
+/**
+ * The user's own standing instructions, appended to what each connector says about itself.
+ *
+ * Issue #85: there was no persistent way to add anything, so the only route was patching
+ * `app.asar` — which an update overwrites. This is a settings field instead.
+ *
+ * Two properties are worth defending in tests rather than in review. It goes **last**, because
+ * everything above it is what the app can actually promise about its own tools and a preference
+ * must not quietly redefine one. And it is **attributed**, so the model can tell a standing
+ * instruction from this user apart from the connector's description of itself — those carry
+ * different authority, and running them together hides that.
+ */
+
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+
+vi.mock('electron', () => ({
+  safeStorage: {
+    isAsyncEncryptionAvailable: async () => true,
+    getSelectedStorageBackend: () => 'gnome_libsecret',
+    encryptStringAsync: async (value: string) => Buffer.from(value, 'utf8'),
+    decryptStringAsync: async (buffer: Buffer) => ({ result: buffer.toString('utf8'), shouldReEncrypt: false })
+  },
+  clipboard: { readText: () => '', writeText: () => undefined },
+  shell: { openExternal: async () => undefined }
+}));
+
+const { MAX_MCP_INSTRUCTIONS_CHARS, defaultConfig, getConfig, initConfigPath, saveConfig } = await import(
+  '../src/main/config.js'
+);
+const { serverInstructions } = await import('../src/main/mcp/instructions.js');
+const { makeTempDir, removeTempDir } = await import('./helpers.js');
+const { CAPABILITIES } = await import('../src/shared/types.js');
+type Capabilities = import('../src/shared/types.js').Capabilities;
+
+let dir: string;
+
+const allCapabilities = (): Capabilities =>
+  Object.fromEntries(CAPABILITIES.map((name) => [name, true])) as Capabilities;
+
+const ctx = {
+  roots: [],
+  caps: allCapabilities(),
+  readOnly: false,
+  sessionTools: false,
+  agentTools: false
+};
+
+const HEADING = "The user's own standing instructions for this connector:";
+
+async function withInstructions(instructions: string): Promise<void> {
+  const config = getConfig();
+  await saveConfig({ ...config, mcp: { ...config.mcp, instructions } });
+}
+
+beforeAll(async () => {
+  dir = await makeTempDir('clf-mcp-instructions-');
+  initConfigPath(dir);
+  await saveConfig(defaultConfig());
+});
+
+afterAll(async () => {
+  await removeTempDir(dir);
+});
+
+beforeEach(async () => {
+  await withInstructions('');
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
+describe('the user’s own connector instructions', () => {
+  it.each([
+    [true, true, false, 'file writing and exec_command'],
+    [true, false, false, 'file writing'],
+    [false, true, false, 'exec_command'],
+    [false, false, false, null],
+    [true, true, true, null],
+  ] as const)('affirms only enabled local capabilities (write=%s command=%s readOnly=%s)', (write, command, readOnly, expected) => {
+    const text = serverInstructions({ ...ctx, readOnly, caps: {
+      ...ctx.caps, create: write, edit: write, move: write, deleteFile: write, command,
+    } }, 'core', 'win32');
+    const assertion = text.split('\n').find(line => / (is|are) enabled in CoS\.$/.test(line));
+    if (expected) {
+      expect(assertion).toBe({ 'file writing and exec_command': 'File writing and exec_command are enabled in CoS.',
+        'file writing': 'File writing is enabled in CoS.', 'exec_command': 'exec_command is enabled in CoS.' }[expected]);
+    } else expect(assertion).toBeUndefined();
+  });
+  it.each(['win32', 'darwin', 'linux'] as const)('teaches the same terminal result lifetime on %s', platform => {
+    const text = serverInstructions({ ...ctx, caps: { ...ctx.caps, command: true } }, 'core', platform);
+    expect(text).toContain('completed_session_id');
+    // write_stdin has one id argument. completed_session_id is an exec_command result field that
+    // goes into it; read as a second argument, the strict schema refuses the call.
+    expect(text).toContain("pass a finished command's completed_session_id as session_id");
+    expect(text).toContain('expected_exit');
+    expect(text).not.toContain('benign');
+    expect(text).toContain('without rerunning work');
+    if (platform !== 'win32') {
+      expect(text).toContain('normal POSIX shell');
+      expect(text).not.toContain('Pipe foreach output');
+    }
+  });
+  it('starts with the coding guidance and explains connectors once beside the local tools without a setup link', () => {
+    const text = serverInstructions(ctx, 'core', 'win32');
+    expect(text.startsWith('You are DeepSeek, a model made by DeepSeek')).toBe(true);
+    expect(text).toContain('You are working with the user through DeepSeek On Steroids.');
+    const intro = text.split('\n').find(line => line.startsWith('Use the connected tools as needed:'))!;
+    expect(intro).toContain('DeepSeek On Steroids Core for files');
+    expect(intro).toContain('DeepSeek On Steroids Desktop for background browser tabs');
+    expect(intro).toContain('DeepSeek On Steroids Plugins for enabled external apps');
+    expect(text.indexOf(intro)).toBeGreaterThan(text.indexOf('# Local tools'));
+    expect(text).not.toMatch(/Chat On Steroids|This is Chat On Steroids|https:\/\/chatgpt.com\/#settings\/Plugins/);
+    expect(serverInstructions(ctx, 'core', 'linux')).toContain('DeepSeek On Steroids Desktop');
+  });
+  it('routes Linux browser users to Core for files without advertising native desktop tools', () => {
+    const text = serverInstructions(ctx, 'desktop', 'linux');
+    expect(text).toContain('browser_snapshot');
+    expect(text).toContain('Files, patches and shell commands live in the separate "DeepSeek On Steroids Core" connector.');
+    expect(text).not.toContain('get_window_state');
+    expect(text).not.toContain('Do not poll with a batch that only waits');
+  });
+  it('adapts upstream instructions without unsupported facilities and projects live tools', () => {
+    const text = serverInstructions(ctx, 'core', 'win32');
+    expect(text).toContain('Do not settle for a partial or "helpful enough" solution');
+    expect(text).toContain('look for AGENTS.md');
+    expect(text).not.toMatch(/functions\.|tool_search|approval auto-review|user-requested computer shutdown/);
+    expect(text).toContain('/skills/<id>/SKILL.md');
+    expect(text).not.toContain('Use update_plan');
+    const recorded = serverInstructions({ ...ctx, sessionTools: true }, 'core', 'win32');
+    expect(recorded).toContain('Use update_plan');
+    expect(recorded).not.toMatch(/session action=|update_cursor|recorded history/);
+    const withoutCommands = serverInstructions({ ...ctx, caps: { ...ctx.caps, command: false } }, 'core', 'linux');
+    expect(withoutCommands).toContain('find searches');
+    expect(withoutCommands).not.toContain('exec_command runs');
+  });
+
+  // #1755: ChatGPT's safety check flagged the connector text as a "Suspicious instruction" that
+  // tries to steer how calls are run and judged. The instructions state facts, never rules for
+  // treating blocks, approvals or ChatGPT's own messages.
+  it.each(['win32', 'darwin'] as const)('states facts, never rules about blocks or approvals (%s)', platform => {
+    const text = serverInstructions({ ...ctx, caps: { ...ctx.caps, command: true, create: true, edit: true } }, 'core', platform);
+    expect(text).not.toMatch(/never hallucinate a block|retry the identical call|keep using enabled tools|you can always use|not permission\./i);
+  });
+
+  // 2026-10-24, VM: flagged again, on a plain write_stdin poll: "the tool description tries to steer the
+  // classification by presenting the risk assessment as subordinate to an alleged tool policy".
+  // Nothing the connector says may rank its own rules above ChatGPT's check: no "authority" or
+  // "guards" that decide, no policy that keeps programs "trusted", no nudge to repeat a blocked call.
+  it.each(['win32', 'darwin', 'linux'] as const)('never ranks its own rules above ChatGPT\'s check (%s)', async platform => {
+    const config = getConfig();
+    await saveConfig({ ...config, commandAllowlist: { enabled: true, mode: 'allow', rules: [] } });
+    try {
+      const text = serverInstructions({ ...ctx, sessionTools: true, agentTools: true }, 'core', platform);
+      expect(text).not.toMatch(/authority|guards? decide|under current guards|polic(y|ies)|\btrusted\b|succeeds when made again|changes no tool permission/i);
+      // The facts the lines carried are still there.
+      expect(text).toMatch(/Enabled in Core: .*command=on/);
+      // DeepSeek runs no safety check between a call and CoS, so there is no such block to explain.
+      expect(text).not.toMatch(/blocked by OpenAI|comes from ChatGPT/);
+      expect(text).toContain('COMMAND_NOT_ALLOWED is a refusal by those rules: the program was not started.');
+    } finally { await saveConfig(config); }
+  });
+
+  it('mentions no OpenAI safety refusal and offers session_finish to any model', () => {
+    // #555: a benign call was blocked once by ChatGPT and succeeded unchanged on retry.
+    const text = serverInstructions({ ...ctx, exposedFinishTool: true }, 'core', 'win32');
+    // DeepSeek has no OpenAI safety check, so the chat is never told about one.
+    expect(text).not.toMatch(/blocked by OpenAI|safety status|comes from ChatGPT/);
+    // The fact stays; the nudge to repeat a call ChatGPT's check blocked does not (2026-10-24).
+    expect(text).not.toContain('the same call often succeeds when made again');
+    // #556: the tool is exposed by the finish setting, not by model; Sol users were told "Astra only".
+    expect(text).toContain('Use session_finish only when the user prompt explicitly requests it, with any model.');
+    expect(text).not.toMatch(/Astra only/);
+  });
+
+  it('adds nothing at all when empty, not even the heading', () => {
+    expect(defaultConfig().mcp.instructions).toBe('');
+    for (const surface of ['core', 'desktop'] as const) {
+      const text = serverInstructions(ctx, surface, 'win32');
+      expect(text, surface).not.toContain(HEADING);
+    }
+  });
+
+  it.each(['core', 'desktop'] as const)('appends them last on the %s connector, attributed', async (surface) => {
+    const mine = 'Always run the test suite before saying a change works.';
+    await withInstructions(mine);
+
+    const text = serverInstructions(ctx, surface, 'win32');
+    expect(text).toContain(HEADING);
+    expect(text).toContain(mine);
+    // Last: nothing the app authored may follow, or a preference would be read as overriding
+    // guidance that comes after it.
+    expect(text.trimEnd().endsWith(mine)).toBe(true);
+    // And the heading immediately precedes it, so the attribution cannot drift away.
+    expect(text.indexOf(HEADING)).toBeLessThan(text.indexOf(mine));
+  });
+
+  it('leaves everything the app says about itself intact', async () => {
+    const before = serverInstructions(ctx, 'core', 'win32');
+    await withInstructions('Prefer pnpm.');
+    const after = serverInstructions(ctx, 'core', 'win32');
+
+    // Added to, never edited: the connector's own description is unchanged character for
+    // character, and only the attributed block is new.
+    expect(after.startsWith(before)).toBe(true);
+    expect(after.slice(before.length)).toContain('Prefer pnpm.');
+  });
+
+  it('survives a reload, which is the whole point of it being a setting', async () => {
+    await withInstructions('Never force-push.');
+    initConfigPath(dir);
+    expect(getConfig().mcp.instructions).toBe('Never force-push.');
+    expect(serverInstructions(ctx, 'core', 'win32')).toContain('Never force-push.');
+  });
+
+  it('trims surrounding whitespace rather than emitting a blank block', async () => {
+    await withInstructions('   \n  \t ');
+    expect(getConfig().mcp.instructions).toBe('');
+    expect(serverInstructions(ctx, 'core', 'win32')).not.toContain(HEADING);
+  });
+
+  it('caps an over-long value instead of rejecting the whole config', async () => {
+    // Repaired, not rejected. This is free text a person typed, and one over-long field must
+    // not send every root and every permission through conservative recovery.
+    await withInstructions('x'.repeat(MAX_MCP_INSTRUCTIONS_CHARS + 500));
+    const stored = getConfig().mcp.instructions;
+    expect(stored.length).toBe(MAX_MCP_INSTRUCTIONS_CHARS);
+    // And the rest of the config is still the real one, not the conservative fallback.
+    expect(getConfig().readOnly).toBe(false);
+    expect(serverInstructions(ctx, 'core', 'win32')).toContain(stored);
+  });
+});

@@ -1,0 +1,1329 @@
+import { REASONING_EFFORTS } from '../src/shared/session.js';
+import { promises as fs } from 'node:fs';
+import path from 'node:path';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import {
+  DEFAULT_GOAL_MODEL,
+  defaultConfig,
+  initConfigPath,
+  loadConfig,
+  saveConfig,
+  settingsRecovered,
+  updateConfig
+} from '../src/main/config.js';
+import { DESKTOP_CAPABILITIES, type Capability, type Config } from '../src/shared/types.js';
+import { makeTempDir, removeTempDir } from './helpers.js';
+
+let dir: string;
+
+beforeAll(async () => {
+  dir = await makeTempDir('clf-config-');
+  initConfigPath(dir);
+});
+
+afterAll(async () => {
+  await removeTempDir(dir);
+});
+
+describe('browser bridge port config', () => {
+  it('defaults fresh and legacy configs to Auto and round-trips every supported choice', async () => {
+    expect(defaultConfig().ui.browserBridgePort).toBe('auto');
+    const legacy = defaultConfig(); delete legacy.ui.browserBridgePort;
+    await fs.writeFile(path.join(dir, 'config.json'), JSON.stringify(legacy), 'utf8');
+    expect((await loadConfig()).ui.browserBridgePort).toBe('auto');
+    for (const browserBridgePort of ['auto', 8765, 8766, 8767, 8768, 8769] as const) {
+      await saveConfig({ ...defaultConfig(), ui: { ...defaultConfig().ui, browserBridgePort } });
+      expect((await loadConfig()).ui.browserBridgePort).toBe(browserBridgePort);
+    }
+  });
+  it.each([null, '', '8765', 'Auto', 0, 8764, 8770, 8765.5, true])('rejects an explicit invalid choice: %s', async value => {
+    const before = await fs.readFile(path.join(dir, 'config.json'), 'utf8');
+    await expect(saveConfig({ ...defaultConfig(), ui: { ...defaultConfig().ui, browserBridgePort: value as any } })).rejects.toThrow();
+    expect(await fs.readFile(path.join(dir, 'config.json'), 'utf8')).toBe(before);
+  });
+});
+
+describe('settings migration', () => {
+  it('defaults command policy enforcement off in allow mode and round-trips both modes', async () => {
+    expect(defaultConfig().commandAllowlist).toEqual({ enabled: false, mode: 'allow', rules: [] });
+    const legacy = defaultConfig() as Partial<ReturnType<typeof defaultConfig>>;
+    delete legacy.commandAllowlist;
+    await fs.writeFile(path.join(dir, 'config.json'), JSON.stringify(legacy), 'utf8');
+    expect((await loadConfig()).commandAllowlist).toEqual({ enabled: false, mode: 'allow', rules: [] });
+
+    const legacyAllowlist = { ...defaultConfig(), commandAllowlist: { enabled: true, rules: ['git status'] } };
+    await fs.writeFile(path.join(dir, 'config.json'), JSON.stringify(legacyAllowlist), 'utf8');
+    expect((await loadConfig()).commandAllowlist).toEqual({ enabled: true, mode: 'allow', rules: ['git status'] });
+
+    await saveConfig({ ...defaultConfig(), commandAllowlist: { enabled: true, mode: 'allow', rules: ['git diff *'] } });
+    expect((await loadConfig()).commandAllowlist).toEqual({ enabled: true, mode: 'allow', rules: ['git diff *'] });
+
+    const saved = await saveConfig({
+      ...defaultConfig(),
+      commandAllowlist: { enabled: true, mode: 'deny', rules: ['git status', 'git diff *'] }
+    });
+    expect(saved.commandAllowlist).toEqual({ enabled: true, mode: 'deny', rules: ['git status', 'git diff *'] });
+    await saveConfig({ ...saved, commandAllowlist: { ...saved.commandAllowlist, enabled: false } });
+    expect((await loadConfig()).commandAllowlist).toEqual({ enabled: false, mode: 'deny', rules: ['git status', 'git diff *'] });
+  });
+
+  it('rejects invalid command allowlist updates without replacing the saved config', async () => {
+    const valid = await saveConfig({ ...defaultConfig(), commandAllowlist: { enabled: true, mode: 'allow', rules: ['git status'] } });
+    const before = await fs.readFile(path.join(dir, 'config.json'), 'utf8');
+    await expect(saveConfig({ ...valid, commandAllowlist: { enabled: true, mode: 'deny', rules: ['git status; whoami'] } })).rejects.toThrow(/shell syntax/i);
+    expect(await fs.readFile(path.join(dir, 'config.json'), 'utf8')).toBe(before);
+  });
+
+  it('recovers conservatively from a malformed active command policy', async () => {
+    await fs.writeFile(path.join(dir, 'config.json'), JSON.stringify({
+      ...defaultConfig(), commandAllowlist: { enabled: true, mode: 'deny', rules: ['git status; whoami'] }
+    }), 'utf8');
+    const loaded = await loadConfig();
+    expect(loaded).toMatchObject({ readOnly: true, commandAllowlist: { enabled: false, mode: 'allow', rules: [] } });
+    expect(loaded.capabilities.command).toBe(false);
+  });
+
+  it('round-trips custom appearance and isolates malformed appearance from permissions', async () => {
+    const { defaultAppearance } = await import('../src/shared/appearance.js');
+    const config = defaultConfig(); config.readOnly = true; config.capabilities.command = false;
+    expect(config.ui.appearance).toBeUndefined();
+    const appearance = defaultAppearance(); appearance.dark.sidebar = '#e53aa0'; appearance.fontSize = 18;
+    await saveConfig({ ...config, ui: { ...config.ui, appearance } });
+    expect((await loadConfig()).ui.appearance).toEqual(appearance);
+    await fs.writeFile(path.join(dir, 'config.json'), JSON.stringify({ ...config,
+      ui: { ...config.ui, appearance: { ...appearance, fontSize: 900 } } }), 'utf8');
+    const loaded = await loadConfig();
+    expect(loaded.readOnly).toBe(true); expect(loaded.capabilities.command).toBe(false);
+    expect(loaded.ui.appearance).toBeUndefined();
+  });
+  it('loads a sidebar layout saved before the setting existed, or no longer offered, as Projects', async () => {
+    const { defaultAppearance } = await import('../src/shared/appearance.js');
+    const config = defaultConfig();
+    const appearance = { ...defaultAppearance(), sidebarLayout: 'inbox' as const }; appearance.dark.sidebar = '#e53aa0';
+    await saveConfig({ ...config, ui: { ...config.ui, appearance } });
+    expect((await loadConfig()).ui.appearance?.sidebarLayout).toBe('inbox');
+    const { sidebarLayout: _, ...old } = appearance;
+    for (const saved of [old, { ...old, sidebarLayout: 'status' }]) {
+      await fs.writeFile(path.join(dir, 'config.json'), JSON.stringify({ ...config, ui: { ...config.ui, appearance: saved } }), 'utf8');
+      // The layout alone falls back; the colors around it are kept.
+      expect((await loadConfig()).ui.appearance).toEqual({ ...appearance, sidebarLayout: 'projects' });
+    }
+  });
+  it('loads line spacing and the announcement switch saved before they existed, or damaged, as normal spacing and off', async () => {
+    const { defaultAppearance } = await import('../src/shared/appearance.js');
+    const config = defaultConfig();
+    const appearance = { ...defaultAppearance(), lineSpacing: 140, font: 'legible' as const }; appearance.dark.sidebar = '#e53aa0';
+    await saveConfig({ ...config, ui: { ...config.ui, appearance, announceTurns: true } });
+    expect((await loadConfig()).ui).toMatchObject({ appearance: { lineSpacing: 140, font: 'legible' }, announceTurns: true });
+    const { lineSpacing: _, ...old } = appearance;
+    for (const [saved, announceTurns] of [[old, undefined], [{ ...old, lineSpacing: 145 }, 'yes']] as const) {
+      await fs.writeFile(path.join(dir, 'config.json'), JSON.stringify({ ...config, readOnly: true,
+        ui: { ...config.ui, appearance: saved, announceTurns } }), 'utf8');
+      const loaded = await loadConfig();
+      // Each falls back on its own; the colors, the font and the rest of Settings are kept.
+      expect(loaded.ui.appearance).toEqual({ ...appearance, lineSpacing: 100 });
+      expect(loaded.ui.announceTurns).toBeUndefined();
+      expect(loaded.readOnly).toBe(true);
+    }
+  });
+  it('loads the sounds switch saved before it existed, or damaged, as off, and keeps everything else', async () => {
+    const config = defaultConfig();
+    await saveConfig({ ...config, ui: { ...config.ui, sounds: true } });
+    expect((await loadConfig()).ui.sounds).toBe(true);
+    const { sounds: _, ...older } = config.ui;
+    for (const ui of [older, { ...older, sounds: 'yes' }, { ...older, sounds: 1 }, { ...older, sounds: null }]) {
+      await fs.writeFile(path.join(dir, 'config.json'), JSON.stringify({ ...config, readOnly: true, ui: { ...ui, theme: 'light' } }), 'utf8');
+      const loaded = await loadConfig();
+      expect(loaded.ui.sounds).toBe(false);
+      expect(loaded.ui.theme).toBe('light');
+      expect(loaded.readOnly).toBe(true);
+    }
+  });
+  // #1914: Same as system is saved as 'system'; Light and Dark from older versions load as they were,
+  // and a damaged theme loads as the default (Dark) without touching the other saved choices.
+  it('loads the System theme, older Light and Dark as saved, and a damaged theme as Dark', async () => {
+    const config = defaultConfig();
+    for (const [saved, loadedAs] of [['system', 'system'], ['light', 'light'], ['dark', 'dark'], ['sepia', 'dark'], [7, 'dark'], [null, 'dark']] as const) {
+      await fs.writeFile(path.join(dir, 'config.json'), JSON.stringify({ ...config, readOnly: true, ui: { ...config.ui, theme: saved, sounds: true } }), 'utf8');
+      const loaded = await loadConfig();
+      expect(loaded.ui.theme).toBe(loadedAs);
+      expect(loaded.ui.sounds).toBe(true);
+      expect(loaded.readOnly).toBe(true);
+    }
+  });
+  it('drops removed file-saving settings without changing other saved choices', async () => {
+    const config = defaultConfig();
+    config.readOnly = true;
+    config.capabilities.command = false;
+    const legacy = {
+      ...config,
+      capabilities: { ...config.capabilities, saveArtifact: true },
+      artifacts: { maxFileBytes: 20 * 1024 * 1024 }
+    };
+    await fs.writeFile(path.join(dir, 'config.json'), JSON.stringify(legacy), 'utf8');
+    const loaded = await loadConfig();
+    expect(loaded).toMatchObject(config);
+    expect(loaded).not.toHaveProperty('artifacts');
+    expect(loaded.capabilities).not.toHaveProperty('saveArtifact');
+    await saveConfig(loaded);
+    const stored = JSON.parse(await fs.readFile(path.join(dir, 'config.json'), 'utf8'));
+    expect(stored).not.toHaveProperty('artifacts');
+    expect(stored.capabilities).not.toHaveProperty('saveArtifact');
+  });
+
+  it('defaults background chats on for fresh and omitted settings while preserving saved choices', async () => {
+    expect(defaultConfig().ui.backgroundChats).toBe(true);
+    expect((await loadConfig()).ui.backgroundChats).toBe(true);
+    const legacy = defaultConfig(); delete legacy.ui.backgroundChats;
+    await fs.writeFile(path.join(dir, 'config.json'), JSON.stringify(legacy), 'utf8');
+    expect((await loadConfig()).ui.backgroundChats).toBe(true);
+    for (const backgroundChats of [false, true]) {
+      await saveConfig({ ...defaultConfig(), ui: { ...defaultConfig().ui, backgroundChats } });
+      expect((await loadConfig()).ui.backgroundChats).toBe(backgroundChats);
+    }
+  });
+  it('defaults background placement to a window and keeps a saved tab-group choice', async () => {
+    expect(defaultConfig().ui.backgroundPlacement).toBe('window');
+    const legacy = defaultConfig(); delete (legacy.ui as { backgroundPlacement?: string }).backgroundPlacement;
+    await fs.writeFile(path.join(dir, 'config.json'), JSON.stringify(legacy), 'utf8');
+    expect((await loadConfig()).ui.backgroundPlacement).toBe('window');
+    for (const backgroundPlacement of ['group', 'window'] as const) {
+      await saveConfig({ ...defaultConfig(), ui: { ...defaultConfig().ui, backgroundPlacement } });
+      expect((await loadConfig()).ui.backgroundPlacement).toBe(backgroundPlacement);
+    }
+    await fs.writeFile(path.join(dir, 'config.json'), JSON.stringify({ ...defaultConfig(), ui: { ...defaultConfig().ui, backgroundPlacement: 'sidebar' } }), 'utf8');
+    const loaded = await loadConfig();
+    expect(loaded.ui.backgroundPlacement).toBe('window');
+    expect(loaded.ui.backgroundChats).toBe(true);
+  });
+  it('defaults login startup off for fresh and legacy settings independently of auto-connect', async () => {
+    expect(defaultConfig().ui.startAtLogin).toBe(false);
+    const legacy = defaultConfig();
+    delete legacy.ui.startAtLogin;
+    legacy.ui.autoConnect = true;
+    await fs.writeFile(path.join(dir, 'config.json'), JSON.stringify(legacy), 'utf8');
+    expect((await loadConfig()).ui).toMatchObject({ startAtLogin: false, autoConnect: true });
+    await saveConfig({ ...defaultConfig(), ui: { ...defaultConfig().ui, startAtLogin: true, autoConnect: false } });
+    expect((await loadConfig()).ui).toMatchObject({ startAtLogin: true, autoConnect: false });
+  });
+  it('turns phone notifications off, rather than pointing them at ntfy.sh, when the saved server is damaged', async () => {
+    const phone = { enabled: true, server: 'https://push.example.org', topic: 'cos-fixturetopic234567', needsYou: true, failures: true,
+      finishedAfterMinutes: 5, onlyWhenAway: true, quietHours: null, includeDetails: true };
+    for (const server of ['x'.repeat(3000), 42, null]) {
+      await fs.writeFile(path.join(dir, 'config.json'), JSON.stringify({ ...defaultConfig(), ui: { ...defaultConfig().ui, phonePush: { ...phone, server } } }), 'utf8');
+      // Chat details must never go to a server nobody chose: off, and no server at all.
+      expect((await loadConfig()).ui.phonePush, String(server).slice(0, 8)).toMatchObject({ enabled: false, server: '', topic: phone.topic, includeDetails: true });
+    }
+    // Said in the log, once, and never with the damaged value.
+    const { getLog } = await import('../src/main/logger.js');
+    const lines = getLog().filter(entry => entry.message.startsWith('phone notifications: the saved server setting was damaged'));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]!.message).not.toContain('xxxx');
+    // A missing server is the default, as before.
+    const { server: _server, ...withoutServer } = phone;
+    await fs.writeFile(path.join(dir, 'config.json'), JSON.stringify({ ...defaultConfig(), ui: { ...defaultConfig().ui, phonePush: withoutServer } }), 'utf8');
+    expect((await loadConfig()).ui.phonePush).toMatchObject({ enabled: true, server: 'https://ntfy.sh' });
+  });
+  it('rotates long turns after 30 minutes for fresh, legacy and malformed settings, keeping saved choices', async () => {
+    expect(defaultConfig().ui.rotateTurnMinutes).toBe(30);
+    const legacy = defaultConfig(); delete legacy.ui.rotateTurnMinutes;
+    await fs.writeFile(path.join(dir, 'config.json'), JSON.stringify(legacy), 'utf8');
+    expect((await loadConfig()).ui.rotateTurnMinutes).toBe(30);
+    await fs.writeFile(path.join(dir, 'config.json'), JSON.stringify({ ...legacy, ui: { ...legacy.ui, rotateTurnMinutes: 'soon', startAtLogin: true } }), 'utf8');
+    expect((await loadConfig()).ui).toMatchObject({ rotateTurnMinutes: 30, startAtLogin: true });
+    await saveConfig({ ...defaultConfig(), ui: { ...defaultConfig().ui, rotateTurnMinutes: 0 } });
+    expect((await loadConfig()).ui.rotateTurnMinutes).toBe(0);
+  });
+  it('keeps the stop fallback for fresh turns off unless chosen, also for legacy and malformed settings', async () => {
+    expect(defaultConfig().ui.rotateStopFallback).toBe(false);
+    const legacy = defaultConfig(); delete legacy.ui.rotateStopFallback;
+    await fs.writeFile(path.join(dir, 'config.json'), JSON.stringify(legacy), 'utf8');
+    expect((await loadConfig()).ui.rotateStopFallback).toBe(false);
+    await fs.writeFile(path.join(dir, 'config.json'), JSON.stringify({ ...legacy, ui: { ...legacy.ui, rotateStopFallback: 'yes', startAtLogin: true } }), 'utf8');
+    expect((await loadConfig()).ui).toMatchObject({ rotateStopFallback: false, startAtLogin: true });
+    await saveConfig({ ...defaultConfig(), ui: { ...defaultConfig().ui, rotateStopFallback: true } });
+    expect((await loadConfig()).ui.rotateStopFallback).toBe(true);
+  });
+  it('reads other apps’ usage for fresh and legacy settings and keeps it off once switched off', async () => {
+    expect(defaultConfig().ui.localAppUsage).toBe(true);
+    const legacy = defaultConfig(); delete legacy.ui.localAppUsage;
+    await fs.writeFile(path.join(dir, 'config.json'), JSON.stringify(legacy), 'utf8');
+    expect((await loadConfig()).ui.localAppUsage).toBe(true);
+    await saveConfig({ ...defaultConfig(), ui: { ...defaultConfig().ui, localAppUsage: false } });
+    expect((await loadConfig()).ui.localAppUsage).toBe(false);
+  });
+  it('keeps Code checkpoints off for fresh, legacy and malformed configs while preserving explicit opt-in', async () => {
+    expect(defaultConfig().projects).toEqual({ codeCheckpoints: false });
+    const load = async (projects: unknown) => {
+      const stored = { ...defaultConfig(), readOnly: false } as Record<string, unknown>;
+      if (projects === undefined) delete stored.projects; else stored.projects = projects;
+      await fs.writeFile(path.join(dir, 'config.json'), JSON.stringify(stored), 'utf8');
+      return loadConfig();
+    };
+    expect((await load(undefined)).projects).toEqual({ codeCheckpoints: false });
+    expect((await load({})).projects).toEqual({ codeCheckpoints: false });
+    expect((await load({ codeCheckpoints: true })).projects).toEqual({ codeCheckpoints: true });
+    // A bad value repairs to off without sending the rest of the file through (read-only) recovery.
+    const loaded = await load({ codeCheckpoints: 'yes' });
+    expect(loaded.projects).toEqual({ codeCheckpoints: false });
+    expect(loaded.readOnly).toBe(false);
+    expect((await load('on')).projects).toEqual({ codeCheckpoints: false });
+    await saveConfig({ ...defaultConfig(), projects: { codeCheckpoints: true } });
+    expect((await loadConfig()).projects.codeCheckpoints).toBe(true);
+  });
+  it('keeps the local control API off for fresh, legacy and malformed configs while preserving explicit opt-in', async () => {
+    expect(defaultConfig().controlApi).toEqual({ enabled: false, allowActions: false });
+    const legacy = defaultConfig() as Partial<ReturnType<typeof defaultConfig>>; delete legacy.controlApi;
+    await fs.writeFile(path.join(dir, 'config.json'), JSON.stringify(legacy), 'utf8');
+    expect((await loadConfig()).controlApi).toEqual({ enabled: false, allowActions: false });
+    // A config written when the API only had one switch has no allowActions and gets it off.
+    await fs.writeFile(path.join(dir, 'config.json'), JSON.stringify({ ...defaultConfig(), controlApi: { enabled: true } }), 'utf8');
+    expect((await loadConfig()).controlApi).toEqual({ enabled: true, allowActions: false });
+    await saveConfig({ ...defaultConfig(), controlApi: { enabled: true, allowActions: false } });
+    expect((await loadConfig()).controlApi.enabled).toBe(true);
+    // A bad value repairs to off without sending the rest of the file through recovery, which would
+    // make it read-only: `readOnly: false` surviving is the proof that it did not.
+    const malformed = { ...defaultConfig(), readOnly: false, controlApi: { enabled: 'yes' } };
+    await fs.writeFile(path.join(dir, 'config.json'), JSON.stringify(malformed), 'utf8');
+    const loaded = await loadConfig();
+    expect(loaded.controlApi.enabled).toBe(false);
+    expect(loaded.readOnly).toBe(false);
+  });
+  it('grants message actions only with the API on, and repairs each switch on its own', async () => {
+    const load = async (controlApi: unknown) => {
+      await fs.writeFile(path.join(dir, 'config.json'), JSON.stringify({ ...defaultConfig(), readOnly: false, controlApi }), 'utf8');
+      return loadConfig();
+    };
+    expect((await load({ enabled: true, allowActions: true })).controlApi).toEqual({ enabled: true, allowActions: true });
+    // Actions never outlive the API: a hand-edited pair loads as off.
+    expect((await load({ enabled: false, allowActions: true })).controlApi).toEqual({ enabled: false, allowActions: false });
+    // A bad allowActions cannot switch the API itself off, and a bad enabled takes both down.
+    expect((await load({ enabled: true, allowActions: 'yes' })).controlApi).toEqual({ enabled: true, allowActions: false });
+    expect((await load({ enabled: 'yes', allowActions: true })).controlApi).toEqual({ enabled: false, allowActions: false });
+    expect((await load({ allowActions: true })).controlApi).toEqual({ enabled: false, allowActions: false });
+    // Something that is not an object at all repairs the same way, and the rest of the file is kept.
+    for (const notAnObject of [null, [], 'yes', 7, true]) {
+      const loaded = await load(notAnObject);
+      expect(loaded.controlApi, JSON.stringify(notAnObject)).toEqual({ enabled: false, allowActions: false });
+      expect(loaded.readOnly, JSON.stringify(notAnObject)).toBe(false);
+    }
+    const kept = await load({ enabled: true, allowActions: 'yes' });
+    expect(kept.readOnly).toBe(false);
+    await saveConfig({ ...defaultConfig(), controlApi: { enabled: false, allowActions: true } });
+    expect((await loadConfig()).controlApi).toEqual({ enabled: false, allowActions: false });
+  });
+  it('refreshes plugins automatically on a fresh install, keeps legacy settings off and preserves explicit choices', async () => {
+    // A permission chosen in Setup changes the tool list; a new user has nothing else telling them to refresh.
+    expect(defaultConfig().ui.autoRefreshPlugins).toBe(true);
+    const legacy = defaultConfig(); delete legacy.ui.autoRefreshPlugins;
+    await saveConfig(legacy);
+    expect((await loadConfig()).ui.autoRefreshPlugins).toBe(false);
+    await saveConfig({ ...defaultConfig(), ui: { ...defaultConfig().ui, autoRefreshPlugins: true } });
+    expect((await loadConfig()).ui.autoRefreshPlugins).toBe(true);
+    await saveConfig({ ...defaultConfig(), ui: { ...defaultConfig().ui, autoRefreshPlugins: false } });
+    expect((await loadConfig()).ui.autoRefreshPlugins).toBe(false);
+  });
+  it('defaults automatic Skill selection off for fresh and legacy settings while preserving explicit opt-in', async () => {
+    expect(defaultConfig().ui.autoSelectSkills).toBe(false);
+    const legacy = defaultConfig(); delete legacy.ui.autoSelectSkills;
+    await saveConfig(legacy);
+    expect((await loadConfig()).ui.autoSelectSkills).toBe(false);
+    await saveConfig({ ...defaultConfig(), ui: { ...defaultConfig().ui, autoSelectSkills: true } });
+    expect((await loadConfig()).ui.autoSelectSkills).toBe(true);
+  });
+  it('defaults Goal and Loop to ChatGPT while preserving explicit backend choices', async () => {
+    expect(defaultConfig().goal).toMatchObject({ backend: 'chatgpt', loopBackend: 'chatgpt' });
+    for (const backend of ['api', 'templates', 'chatgpt'] as const) {
+      await saveConfig({ ...defaultConfig(), goal: { ...defaultConfig().goal, backend, loopBackend: 'api' } });
+      expect((await loadConfig()).goal).toMatchObject({ backend, loopBackend: 'api' });
+    }
+  });
+  it('normalizes every writer and legacy file to recording on with no age expiry', async () => {
+    const legacy = {
+      ...defaultConfig(),
+      sessions: { ...defaultConfig().sessions, record: false, retainDays: 30 },
+      goal: { ...defaultConfig().goal, enabled: true }
+    };
+
+    const saved = await saveConfig(legacy);
+    expect(saved.sessions).toMatchObject({ record: true, retainDays: 0 });
+    expect(saved.goal.enabled).toBe(true);
+
+    await fs.writeFile(path.join(dir, 'config.json'), JSON.stringify(legacy), 'utf8');
+    const loaded = await loadConfig();
+    expect(loaded.sessions).toMatchObject({ record: true, retainDays: 0 });
+    expect(loaded.goal.enabled).toBe(true);
+  });
+
+  it('preserves old settings when new safe-default capabilities and UI prefs are added', async () => {
+    const oldConfig = {
+      roots: [{ name: 'project', path: 'C:\\Users\\example\\project' }],
+      capabilities: {
+        browse: true,
+        search: true,
+        read: true,
+        metadata: true,
+        create: true,
+        edit: true,
+        move: false,
+        deleteFile: false,
+        powershell: true,
+        command: true,
+        screen: true,
+        control: true
+      },
+      readOnly: false,
+      tunnel: {
+        kind: 'openai',
+        tunnelId: 'tunnel_0123456789abcdef0123456789abcdef',
+        binaryPath: ''
+      },
+      ui: { minimizeToTray: true, autoConnect: true }
+    };
+    await fs.writeFile(path.join(dir, 'config.json'), JSON.stringify(oldConfig), 'utf8');
+
+    const loaded = await loadConfig();
+    expect(loaded.roots).toEqual(oldConfig.roots);
+    expect(loaded.capabilities.create).toBe(true);
+    expect(loaded.capabilities.clipboardRead).toBe(false);
+    expect(loaded.capabilities.clipboardWrite).toBe(false);
+    // A config written before custom providers existed keeps OpenRouter with no URL:
+    // an upgrade never moves a running Goal loop onto an endpoint nobody chose.
+    expect(loaded.goal.provider).toEqual({ kind: 'openrouter', baseUrl: '' });
+    expect(loaded.ui.autoConnect).toBe(true);
+    expect(loaded.ui.privacyScreenshots).toBe(false);
+    // #1797: a config from before the secrets shield has it on.
+    expect(loaded.ui.secretsShield).toBe(true);
+    // The one tunnel id a pre-split config had is Core's, because Core is the connector
+    // the app cannot work without. Desktop is a second, optional tunnel that starts empty
+    // rather than inheriting Core's id — publishing Core twice would be worse than not
+    // publishing Desktop at all.
+    expect(loaded.tunnel.tunnelId).toBe(oldConfig.tunnel.tunnelId);
+    expect(loaded.tunnel.desktopTunnelId).toBe('');
+  });
+
+  it('folds a PowerShell-only permission into the single command permission', async () => {
+    // `powershell` and `command` were one tool each and are now the single exec_command.
+    // A user who had granted only PowerShell keeps the ability they chose; the dead key
+    // does not survive into the saved config.
+    await fs.writeFile(
+      path.join(dir, 'config.json'),
+      JSON.stringify({
+        ...defaultConfig(),
+        capabilities: {
+          ...defaultConfig().capabilities,
+          command: false,
+          deleteFile: false,
+          powershell: true,
+          deleteFolder: true
+        }
+      }),
+      'utf8'
+    );
+    const loaded = await loadConfig();
+    expect(loaded.capabilities.command).toBe(true);
+    expect(Object.keys(loaded.capabilities)).not.toContain('powershell');
+    // `deleteFolder` is dropped rather than folded into deleteFile: they were never the
+    // same permission, and turning one into the other would widen what the user approved.
+    expect(Object.keys(loaded.capabilities)).not.toContain('deleteFolder');
+    expect(loaded.capabilities.deleteFile).toBe(false);
+  });
+
+  it('renames a saved root that claims a reserved virtual namespace', async () => {
+    await fs.writeFile(
+      path.join(dir, 'config.json'),
+      JSON.stringify({ ...defaultConfig(), roots: [{ name: 'skills', path: 'C:\\Users\\example\\skills' }] }),
+      'utf8'
+    );
+    const loaded = await loadConfig();
+    expect(loaded.roots[0]?.name).toBe('skills-folder');
+    expect(loaded.roots[0]?.path).toBe('C:\\Users\\example\\skills');
+  });
+
+  it('keeps reserved-name migration from creating duplicate virtual roots', async () => {
+    await fs.writeFile(
+      path.join(dir, 'config.json'),
+      JSON.stringify({
+        ...defaultConfig(),
+        roots: [
+          { name: 'skills-folder', path: 'C:\\Users\\example\\already-there' },
+          { name: 'skills', path: 'C:\\Users\\example\\legacy-skills' },
+          { name: 'skills-folder', path: 'C:\\Users\\example\\duplicate' }
+        ]
+      }),
+      'utf8'
+    );
+    const loaded = await loadConfig();
+    expect(loaded.roots.map((root) => root.name)).toEqual(['skills-folder', 'skills-folder-2', 'skills-folder-3']);
+    expect(new Set(loaded.roots.map((root) => root.name)).size).toBe(loaded.roots.length);
+  });
+
+  it('round-trips a second tunnel id for the Desktop connector', async () => {
+    const config = defaultConfig();
+    await saveConfig({
+      ...config,
+      tunnel: {
+        ...config.tunnel,
+        tunnelId: 'tunnel_0123456789abcdef0123456789abcdef',
+        desktopTunnelId: 'tunnel_fedcba9876543210fedcba9876543210'
+      }
+    });
+    const loaded = await loadConfig();
+    expect(loaded.tunnel.tunnelId).toBe('tunnel_0123456789abcdef0123456789abcdef');
+    expect(loaded.tunnel.desktopTunnelId).toBe('tunnel_fedcba9876543210fedcba9876543210');
+  });
+
+  /**
+   * Automatic compaction ends the chat the user is working in and opens a fresh one, and it
+   * used to start off on the grounds that this is not something to do to somebody who never
+   * asked for it. In use that reasoning turned out to be backwards: the alternative to
+   * compacting is hitting the ceiling mid-thought and losing the thread entirely, which is
+   * the worse thing to have happen to somebody who never asked for it. Since 1.8 the trigger
+   * is edge-based rather than "currently above the line", so the advisory line is safe as
+   * the default and still leaves room to finish the crossing turn and write the handoff.
+   */
+  it('starts with automatic compaction on at the advisory line', async () => {
+    await saveConfig(defaultConfig());
+    const loaded = await loadConfig();
+    expect(loaded.compaction.auto).toBe(true);
+    expect(loaded.compaction.autoTokens).toBe(loaded.sessions.advisoryTokens);
+    expect(loaded.compaction.autoTokens).toBe(400_000);
+    expect(loaded.compaction.handoffPrompt).toMatch(/10,000[–-]30,000 tokens/i);
+  });
+
+  it('defaults, validates and preserves the editable handoff prompt', async () => {
+    const config = defaultConfig();
+    const older = structuredClone(config) as Record<string, any>;
+    delete older.compaction.handoffPrompt;
+    await fs.writeFile(path.join(dir, 'config.json'), JSON.stringify(older), 'utf8');
+    expect((await loadConfig()).compaction.handoffPrompt).toBe(config.compaction.handoffPrompt);
+
+    await fs.writeFile(
+      path.join(dir, 'config.json'),
+      JSON.stringify({ ...config, compaction: { ...config.compaction, handoffPrompt: '   ' } }),
+      'utf8'
+    );
+    expect((await loadConfig()).compaction.handoffPrompt).toBe(config.compaction.handoffPrompt);
+
+    const custom = 'Preserve the exact next action and unresolved evidence. Keep the rest compact.';
+    await saveConfig({ ...config, compaction: { ...config.compaction, handoffPrompt: custom } });
+    expect((await loadConfig()).compaction.handoffPrompt).toBe(custom);
+  });
+
+  it('keeps 2 GB of recording storage for older and broken configs, and saves a larger size', async () => {
+    const config = defaultConfig();
+    expect(config.sessions.storageLimitGiB).toBe(2);
+    const older = structuredClone(config) as Record<string, any>;
+    delete older.sessions.storageLimitGiB;
+    await fs.writeFile(path.join(dir, 'config.json'), JSON.stringify(older), 'utf8');
+    expect((await loadConfig()).sessions.storageLimitGiB).toBe(2);
+    await fs.writeFile(path.join(dir, 'config.json'),
+      JSON.stringify({ ...config, sessions: { ...config.sessions, storageLimitGiB: 7 } }), 'utf8');
+    expect((await loadConfig()).sessions.storageLimitGiB).toBe(2);
+    await saveConfig({ ...config, sessions: { ...config.sessions, storageLimitGiB: 20 } });
+    expect((await loadConfig()).sessions.storageLimitGiB).toBe(20);
+  });
+
+  it('joins the running turn by default, and loads a broken follow-up behavior as that default', async () => {
+    const config = defaultConfig();
+    expect(config.ui.followUp).toBe('steer');
+    await fs.writeFile(path.join(dir, 'config.json'), JSON.stringify({ ...config, ui: { ...config.ui, followUp: 'later' } }), 'utf8');
+    expect((await loadConfig()).ui.followUp).toBe('steer');
+    await saveConfig({ ...config, ui: { ...config.ui, followUp: 'queue' } });
+    expect((await loadConfig()).ui.followUp).toBe('queue');
+  });
+
+  it('sends with Enter by default and saves Cmd/Ctrl+Enter', async () => {
+    const config = defaultConfig();
+    expect(config.ui.enterSends).toBe(true);
+    await saveConfig({ ...config, ui: { ...config.ui, enterSends: false } });
+    expect((await loadConfig()).ui.enterSends).toBe(false);
+  });
+
+  it('keeps the thorough handoff length for older and broken configs, and saves a choice', async () => {
+    const config = defaultConfig();
+    expect(config.compaction.handoffLength).toBe('thorough');
+    const older = structuredClone(config) as Record<string, any>;
+    delete older.compaction.handoffLength;
+    await fs.writeFile(path.join(dir, 'config.json'), JSON.stringify(older), 'utf8');
+    expect((await loadConfig()).compaction.handoffLength).toBe('thorough');
+    await fs.writeFile(path.join(dir, 'config.json'),
+      JSON.stringify({ ...config, compaction: { ...config.compaction, handoffLength: 'tiny' } }), 'utf8');
+    expect((await loadConfig()).compaction.handoffLength).toBe('thorough');
+    await saveConfig({ ...config, compaction: { ...config.compaction, handoffLength: 'short' } });
+    expect((await loadConfig()).compaction.handoffLength).toBe('short');
+  });
+
+  /**
+   * The Chat panel offers one number and derives the red line from it, `limit = threshold ×
+   * 4/3`. A shipped default that does not already satisfy that relation is a state the UI
+   * cannot produce, and it would not survive contact with it: the first save of anything at
+   * all in that panel would silently move the red line. So the defaults have to agree with
+   * the arithmetic the panel does, which is what this pins.
+   */
+  it('ships a red line the settings panel would have derived itself', async () => {
+    const config = defaultConfig();
+    expect(config.sessions.advisoryTokens).toBe(config.compaction.autoTokens);
+    expect(config.sessions.limitTokens).toBe(Math.round((config.compaction.autoTokens * 4) / 3));
+  });
+
+  /**
+   * The migration, and the line it must not cross. A config still carrying both old
+   * defaults never had a decision made about it, so it moves to the new one. A config
+   * carrying anything else is somebody's own setting and is left exactly as it is.
+   */
+  it('moves an untouched old default onto the new one', async () => {
+    const config = defaultConfig();
+    await saveConfig({ ...config, compaction: { ...config.compaction, auto: false, autoTokens: 300_000 } });
+    const loaded = await loadConfig();
+    expect(loaded.compaction.auto).toBe(true);
+    expect(loaded.compaction.autoTokens).toBe(400_000);
+  });
+
+  /**
+   * The window moved to 400k, and the number that has to follow it is the one the app wrote
+   * for itself. Since 1.8 that is `auto: true` at 300k — the shipped default, in every config
+   * written by every install that never opened the panel. Raising the default alone would
+   * reach a fresh install and nothing else, which is the whole reason this file has
+   * migrations at all.
+   */
+  it('moves the untouched 1.8 automatic default up to the wider window', async () => {
+    const config = defaultConfig();
+    await saveConfig({ ...config, compaction: { ...config.compaction, auto: true, autoTokens: 300_000 } });
+    const loaded = await loadConfig();
+    expect(loaded.compaction).toMatchObject({ auto: true, autoTokens: 400_000 });
+  });
+
+  /** And nothing moves back down: 400k is the default now, however a config came to hold it. */
+  it('leaves a config already at the wider window alone', async () => {
+    const config = defaultConfig();
+    await saveConfig({ ...config, compaction: { ...config.compaction, auto: true, autoTokens: 400_000 } });
+    const loaded = await loadConfig();
+    expect(loaded.compaction).toMatchObject({ auto: true, autoTokens: 400_000 });
+  });
+
+  /**
+   * The meter's own pair, migrated on the same rule. 300k/400k is what 1.8 wrote for itself,
+   * so it follows the window; anything else in either slot was typed and stays.
+   */
+  it('recalibrates an untouched meter pair and leaves a chosen one', async () => {
+    const config = defaultConfig();
+    await saveConfig({ ...config, sessions: { ...config.sessions, advisoryTokens: 300_000, limitTokens: 400_000 } });
+    const moved = await loadConfig();
+    expect(moved.sessions.advisoryTokens).toBe(400_000);
+    expect(moved.sessions.limitTokens).toBe(Math.round((400_000 * 4) / 3));
+
+    await saveConfig({ ...config, sessions: { ...config.sessions, advisoryTokens: 300_000, limitTokens: 350_000 } });
+    const kept = await loadConfig();
+    expect(kept.sessions).toMatchObject({ advisoryTokens: 300_000, limitTokens: 350_000 });
+  });
+
+  it('leaves a user who turned automatic compaction off turned off', async () => {
+    const config = defaultConfig();
+    // Off, but at a threshold they chose: that is a decision, not an untouched default.
+    await saveConfig({ ...config, compaction: { ...config.compaction, auto: false, autoTokens: 250_000 } });
+    const loaded = await loadConfig();
+    expect(loaded.compaction.auto).toBe(false);
+    expect(loaded.compaction.autoTokens).toBe(250_000);
+  });
+
+  it('keeps an automatic compaction the user configured', async () => {
+    const config = defaultConfig();
+    await saveConfig({
+      ...config,
+      compaction: { ...config.compaction, auto: true, autoTokens: 150_000 }
+    });
+    const loaded = await loadConfig();
+    expect(loaded.compaction).toMatchObject({ auto: true, autoTokens: 150_000 });
+  });
+
+  it('keeps the meter threshold aligned with a high automatic-compaction threshold', async () => {
+    const config = defaultConfig();
+    await saveConfig({
+      ...config,
+      sessions: { ...config.sessions, advisoryTokens: 3_000_000, limitTokens: 4_000_000 },
+      compaction: { ...config.compaction, auto: true, autoTokens: 3_000_000 }
+    });
+    const loaded = await loadConfig();
+    expect(loaded.compaction.autoTokens).toBe(3_000_000);
+    expect(loaded.sessions.advisoryTokens).toBe(3_000_000);
+    expect(loaded.sessions.limitTokens).toBe(4_000_000);
+  });
+
+  /**
+   * A config written before these fields existed gets the current defaults, like any other
+   * absent field: absent is not a decision, so it reads as whatever the app decides now.
+   */
+  it('reads a config from before the setting existed as the current default', async () => {
+    const config = defaultConfig();
+    const older = { ...config, compaction: { ...config.compaction } } as Record<string, any>;
+    delete older.compaction.auto;
+    delete older.compaction.autoTokens;
+    await saveConfig(older as ReturnType<typeof defaultConfig>);
+    const loaded = await loadConfig();
+    expect(loaded.compaction.auto).toBe(true);
+    expect(loaded.compaction.autoTokens).toBe(400_000);
+  });
+
+  it('serializes concurrent read-modify-write changes instead of losing one', async () => {
+    await saveConfig(defaultConfig());
+    const first = updateConfig(async (config) => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return { ...config, roots: [{ name: 'project', path: 'C:\\Users\\example\\project' }] };
+    });
+    const second = updateConfig((config) => ({
+      ...config,
+      ui: { ...config.ui, theme: 'dark' as const }
+    }));
+    await Promise.all([first, second]);
+
+    const loaded = await loadConfig();
+    expect(loaded.roots).toEqual([{ name: 'project', path: 'C:\\Users\\example\\project' }]);
+    expect(loaded.ui.theme).toBe('dark');
+  });
+});
+
+/** Fresh-install defaults, while migrations above prove existing choices stay narrow. */
+describe('shipped defaults', () => {
+  // Windows starts the group on; Linux starts its extension browser capabilities on.
+  // macOS preserves its existing off default and separate native OS consent.
+  const expectedFreshCapability = (capability: Capability, platform: NodeJS.Platform): boolean =>
+    platform === 'win32' || !DESKTOP_CAPABILITIES.includes(capability) ||
+    (platform !== 'darwin' && (capability === 'screen' || capability === 'control'));
+
+  it('records sessions from first launch', () => {
+    expect(defaultConfig().sessions).toMatchObject({ record: true, retainDays: 0 });
+  });
+
+  it('uses the built-in DeepSeek browser on a first launch and for an older config', async () => {
+    // DeepSeek has no companion extension: its chats only run in the app's own browser.
+    await fs.rm(path.join(dir, 'config.json'), { force: true });
+    expect((await loadConfig()).ui.chatBrowser).toBe('cos');
+    // Written before the choice existed: it reads as that same browser.
+    const older = defaultConfig() as Config;
+    delete (older.ui as Partial<Config['ui']>).chatBrowser;
+    await fs.writeFile(path.join(dir, 'config.json'), JSON.stringify(older), 'utf8');
+    expect((await loadConfig()).ui.chatBrowser).toBe('cos');
+    // Nor does a damaged file switch anyone's browser.
+    await fs.writeFile(path.join(dir, 'config.json'), '{"roots":', 'utf8');
+    expect((await loadConfig()).ui.chatBrowser).toBe('cos');
+  });
+
+  it('loads a genuinely missing config with every portable Core capability enabled', async () => {
+    await fs.rm(path.join(dir, 'config.json'), { force: true });
+    const loaded = await loadConfig();
+    expect(loaded.readOnly).toBe(false);
+    for (const [capability, enabled] of Object.entries(loaded.capabilities) as Array<[Capability, boolean]>) {
+      expect(enabled, capability).toBe(expectedFreshCapability(capability, process.platform));
+    }
+    expect(loaded.multiAgent.enabled).toBe(true);
+    expect(loaded.multiAgent.globalMaxWorkers).toBe(0);
+    expect(loaded.multiAgent.allowUnattributedCalls).toBe(true);
+    expect(loaded.multiAgent.recoverAgentTabs).toBe(false);
+    // Waiting for a run's own workers is a workflow preference, not a first-launch exposure
+    // decision, so it starts off even where unattributed calls start on.
+    expect(loaded.multiAgent.waitForSubAgents).toBe(false);
+    expect(loaded.multiAgent.autoWorktrees).toBe(false);
+    expect(loaded.multiAgent.endSleepingWorkerProcesses).toBe(false);
+    expect(loaded.multiAgent.archiveWorkerChats).toBe(false);
+  });
+
+  it.each(['win32', 'darwin', 'linux'] as const)(
+    'starts portable permissions on and Desktop automation on Windows only on %s',
+    (platform) => {
+      const config = defaultConfig(platform);
+      expect(config.readOnly).toBe(false);
+      for (const [capability, enabled] of Object.entries(config.capabilities) as Array<[Capability, boolean]>) {
+        expect(enabled, `${platform}:${capability}`).toBe(expectedFreshCapability(capability, platform));
+      }
+      expect(config.multiAgent.enabled).toBe(true);
+      expect(config.multiAgent.maxWorkers).toBe(2);
+      expect(config.multiAgent.globalMaxWorkers).toBe(0);
+      expect(config.multiAgent.allowUnattributedCalls).toBe(true);
+      expect(config.multiAgent.strictChatAllowlist).toBe(false);
+      expect(config.multiAgent.recoverAgentTabs).toBe(false);
+      expect(config.multiAgent.waitForSubAgents).toBe(false);
+      expect(config.multiAgent.autoWorktrees).toBe(false);
+      expect(config.multiAgent.endSleepingWorkerProcesses).toBe(false);
+      expect(config.multiAgent.archiveWorkerChats).toBe(false);
+    }
+  );
+
+  it('does not widen omitted permissions or agents exposure in an existing legacy config', async () => {
+    const legacy = {
+      roots: [],
+      capabilities: { browse: true, search: true, read: true, metadata: true },
+      readOnly: true,
+      tunnel: { kind: 'openai', tunnelId: '', binaryPath: '' },
+      ui: { minimizeToTray: true, autoConnect: false }
+    };
+    await fs.writeFile(path.join(dir, 'config.json'), JSON.stringify(legacy), 'utf8');
+    const loaded = await loadConfig();
+    expect(loaded.capabilities.command).toBe(false);
+    expect(loaded.capabilities.control).toBe(false);
+    expect(loaded.multiAgent.enabled).toBe(false);
+    expect(loaded.multiAgent.globalMaxWorkers).toBe(0);
+    expect(loaded.multiAgent.allowUnattributedCalls).toBe(false);
+    expect(loaded.multiAgent.strictChatAllowlist).toBe(false);
+    expect(loaded.multiAgent.recoverAgentTabs).toBe(false);
+    expect(loaded.multiAgent.waitForSubAgents).toBe(false);
+    expect(loaded.multiAgent.autoWorktrees).toBe(false);
+    expect(loaded.multiAgent.endSleepingWorkerProcesses).toBe(false);
+    expect(loaded.multiAgent.archiveWorkerChats).toBe(false);
+    expect(loaded.readOnly).toBe(true);
+  });
+
+  it('keeps a saved choice to archive retired worker chats (#1460)', async () => {
+    const config = defaultConfig();
+    await saveConfig({ ...config, multiAgent: { ...config.multiAgent, archiveWorkerChats: true } });
+    expect((await loadConfig()).multiAgent.archiveWorkerChats).toBe(true);
+  });
+
+  it('does not turn config corruption into permission consent', async () => {
+    await fs.writeFile(path.join(dir, 'config.json'), '{ definitely-not-json', 'utf8');
+    const loaded = await loadConfig();
+    expect(loaded.readOnly).toBe(true);
+    expect(loaded.capabilities.command).toBe(false);
+    expect(loaded.capabilities.control).toBe(false);
+    expect(loaded.multiAgent.enabled).toBe(false);
+    expect(loaded.ui.autoRefreshPlugins).toBe(false);
+  });
+
+  it('says a recovered config started read-only until read-only is switched off', async () => {
+    await fs.writeFile(path.join(dir, 'config.json'), '{ definitely-not-json', 'utf8');
+    const recovered = await loadConfig();
+    expect(settingsRecovered()).toBe(true);
+    // Another save that keeps read-only, such as adding a folder, leaves the reason on screen.
+    await saveConfig({ ...recovered, roots: [] });
+    expect(settingsRecovered()).toBe(true);
+    await saveConfig({ ...recovered, readOnly: false });
+    expect(settingsRecovered()).toBe(false);
+  });
+
+  it('keeps the global worker admission cap off for legacy configs and preserves an explicit opt-in', async () => {
+    const config = defaultConfig();
+    expect(config.multiAgent.globalMaxWorkers).toBe(0);
+    await saveConfig({
+      ...config,
+      multiAgent: { ...config.multiAgent, globalMaxWorkers: 5 }
+    });
+    expect((await loadConfig()).multiAgent.globalMaxWorkers).toBe(5);
+  });
+
+  it('requires an explicit opt-in for new worker Git worktrees and persists either choice', async () => {
+    const original = defaultConfig();
+    expect(original.multiAgent.autoWorktrees).toBe(false);
+    await saveConfig({ ...original, multiAgent: { ...original.multiAgent, autoWorktrees: true } });
+    expect((await loadConfig()).multiAgent.autoWorktrees).toBe(true);
+    await saveConfig({ ...original, multiAgent: { ...original.multiAgent, autoWorktrees: false } });
+    expect((await loadConfig()).multiAgent.autoWorktrees).toBe(false);
+
+    // Existing settings written before this opt-in existed must not gain worktree creation.
+    const stored = JSON.parse(await fs.readFile(path.join(dir, 'config.json'), 'utf8'));
+    delete stored.multiAgent.autoWorktrees;
+    await fs.writeFile(path.join(dir, 'config.json'), JSON.stringify(stored), 'utf8');
+    expect((await loadConfig()).multiAgent.autoWorktrees).toBe(false);
+  });
+
+  it('does not persist obsolete recording-off or age-retention choices', async () => {
+    const config = defaultConfig();
+    await saveConfig({ ...config, sessions: { ...config.sessions, record: false, retainDays: 3650 } });
+    expect((await loadConfig()).sessions).toMatchObject({ record: true, retainDays: 0 });
+    const stored = JSON.parse(await fs.readFile(path.join(dir, 'config.json'), 'utf8'));
+    expect(stored.sessions).toMatchObject({ record: true, retainDays: 0 });
+  });
+
+  it('applies the new default to a config written before the setting existed', async () => {
+    const before = defaultConfig() as unknown as Record<string, unknown>;
+    const { sessions: _dropped, ...withoutSessions } = before;
+    await fs.writeFile(path.join(dir, 'config.json'), JSON.stringify(withoutSessions), 'utf8');
+    expect((await loadConfig()).sessions.record).toBe(true);
+  });
+
+  /**
+   * Save, close, reopen. The unattributed switch is on out of the box, so the only way to
+   * see it off is to have turned it off — and that choice has to survive the next launch
+   * rather than being handed back the fresh-install default on load.
+   */
+  it('keeps either unattributed choice across a save and reload', async () => {
+    const config = defaultConfig();
+    expect(config.multiAgent.allowUnattributedCalls).toBe(true);
+
+    await saveConfig({
+      ...config,
+      multiAgent: { ...config.multiAgent, allowUnattributedCalls: false }
+    });
+    expect((await loadConfig()).multiAgent.allowUnattributedCalls).toBe(false);
+
+    await saveConfig({
+      ...config,
+      multiAgent: { ...config.multiAgent, allowUnattributedCalls: true }
+    });
+    expect((await loadConfig()).multiAgent.allowUnattributedCalls).toBe(true);
+  });
+
+  it('keeps strict chat allowlisting opt-in across save and reload', async () => {
+    const config = defaultConfig();
+    expect(config.multiAgent.strictChatAllowlist).toBe(false);
+    await saveConfig({
+      ...config,
+      multiAgent: { ...config.multiAgent, strictChatAllowlist: true }
+    });
+    expect((await loadConfig()).multiAgent.strictChatAllowlist).toBe(true);
+  });
+});
+
+/**
+ * The goal loop's settings.
+ *
+ * This is the one feature in this app that types into somebody's chat without being asked
+ * each time, so what it defaults to — and what a damaged config falls back to — is a
+ * consent question rather than a convenience one.
+ */
+describe('the goal loop settings', () => {
+  it('keeps helper settings independent from the API and preserves a chosen idle tab budget', async () => {
+    const config = defaultConfig();
+    expect(config.goal).toMatchObject({ helperModel: 'deepseek-flash', helperReasoning: 'high', model: DEFAULT_GOAL_MODEL });
+    await saveConfig({ ...config, ui: { ...config.ui, tabsToKeepOpen: 7 }, goal: {
+      ...config.goal, model: 'provider/api-model', reasoning: 'low', helperModel: 'account-browser-model', helperReasoning: 'medium'
+    } });
+    const loaded = await loadConfig();
+    expect(loaded.goal).toMatchObject({ model: 'provider/api-model', reasoning: 'low', helperModel: 'account-browser-model', helperReasoning: 'medium' });
+    expect(loaded.ui.tabsToKeepOpen).toBe(7);
+  });
+  it('is off out of the box', () => {
+    const config = defaultConfig();
+    expect(config.goal.enabled).toBe(false);
+    expect(config.goal.model).toBe('z-ai/glm-5.3');
+    expect(config.goal.reasoning).toBe('default');
+    expect(config.goal.prompt).toContain('Your job is to prompt DeepSeek');
+    expect(config.goal.prompt).toContain('No separate objective is supplied');
+    // The driver ships beside the gate rather than staying hardcoded, so a fresh install has
+    // both editable instructions on disk and the settings screen has something to paint.
+    expect(config.goal.objectivePrompt).toContain('Your job is to prompt DeepSeek');
+    expect(config.goal.objectivePrompt).toContain('Read it together with the original task');
+  });
+
+  it('keeps the Goal step reviewer off by default, and loads a saved or damaged choice safely (#1832)', async () => {
+    expect(defaultConfig().goal.reviewerModel).toBe('');
+    await saveConfig({ ...defaultConfig(), goal: { ...defaultConfig().goal, reviewerModel: 'same' } });
+    expect((await loadConfig()).goal.reviewerModel).toBe('same');
+    await saveConfig({ ...defaultConfig(), goal: { ...defaultConfig().goal, reviewerModel: '  gpt-6-thinking ' } });
+    expect((await loadConfig()).goal.reviewerModel).toBe('gpt-6-thinking');
+    // A value no version wrote (too long, not text) turns the reviewer off rather than failing the file.
+    await saveConfig({ ...defaultConfig(), goal: { ...defaultConfig().goal, reviewerModel: 'x'.repeat(200) } });
+    const loaded = await loadConfig();
+    expect(loaded.goal.reviewerModel).toBe('');
+    expect(loaded.goal.helperModel).toBe(defaultConfig().goal.helperModel);
+  });
+
+  it('moves the exact superseded helper models to DeepSeek-V4.1-Flash and keeps any other choice', async () => {
+    await saveConfig({ ...defaultConfig(), goal: { ...defaultConfig().goal, helperModel: 'gpt-5.6-sol', helperReasoning: 'medium' } });
+    // GPT-5.6 Sol is no longer a model this app offers; the untouched shipped value adopts the current default.
+    expect((await loadConfig()).goal).toMatchObject({ helperModel: 'deepseek-flash', helperReasoning: 'medium' });
+    // The old lane alias was shipped too, so it adopts the current model rather than lingering (#1217).
+    await saveConfig({ ...defaultConfig(), goal: { ...defaultConfig().goal, helperModel: 'gpt-6-thinking', helperReasoning: 'high' } });
+    expect((await loadConfig()).goal).toMatchObject({ helperModel: 'deepseek-flash', helperReasoning: 'high' });
+    // DeepSeek retired V4-Pro from the web (2026-09-14), so the old default moves to Flash too.
+    await saveConfig({ ...defaultConfig(), goal: { ...defaultConfig().goal, helperModel: 'deepseek-v4-pro', helperReasoning: 'none' } });
+    expect((await loadConfig()).goal).toMatchObject({ helperModel: 'deepseek-flash', helperReasoning: 'none' });
+    await saveConfig({ ...defaultConfig(), goal: { ...defaultConfig().goal, helperModel: 'gpt-5-6-thinking' } });
+    expect((await loadConfig()).goal.helperModel).toBe('gpt-5-6-thinking');
+  });
+
+  it('keeps the model, reasoning level and system prompt that were chosen', async () => {
+    const prompt = 'Custom continuation gate. Reply NO_REPLY when finished.';
+    const objectivePrompt = 'Custom goal driver. Reply NO_REPLY once the goal is reached.';
+    const loopPrompt = 'Custom loop. Always write the next message.';
+    await saveConfig({
+      ...defaultConfig(),
+      goal: {
+        ...defaultConfig().goal,
+        enabled: true,
+        mode: 'loop',
+        model: 'openai/gpt-5.2-mini:nitro',
+        reasoning: 'high',
+        prompt,
+        objectivePrompt,
+        loopPrompt
+      }
+    });
+    expect((await loadConfig()).goal).toEqual({
+      backend: 'chatgpt',
+      loopBackend: 'chatgpt',
+      includeToolCalls: false,
+      impulseMinutes: 0,
+      helperModel: 'deepseek-flash',
+      helperReasoning: 'high',
+      reviewerModel: '',
+      enabled: true,
+      mode: 'loop',
+      provider: { kind: 'openrouter', baseUrl: '' },
+      model: 'openai/gpt-5.2-mini:nitro',
+      reasoning: 'high',
+      prompt,
+      objectivePrompt,
+      loopPrompt
+    });
+  });
+
+  it('upgrades only the exact previous shipped prompt and preserves customized prompts', async () => {
+    const { PREVIOUS_DEFAULT_GOAL_SYSTEM_PROMPT } = await import('../src/shared/goal.js');
+    const config = defaultConfig();
+    await fs.writeFile(
+      path.join(dir, 'config.json'),
+      JSON.stringify({ ...config, goal: { ...config.goal, prompt: PREVIOUS_DEFAULT_GOAL_SYSTEM_PROMPT } }),
+      'utf8'
+    );
+    expect((await loadConfig()).goal.prompt).toBe(defaultConfig().goal.prompt);
+
+    const customized = `${PREVIOUS_DEFAULT_GOAL_SYSTEM_PROMPT}\ncustom sentence`;
+    await fs.writeFile(
+      path.join(dir, 'config.json'),
+      JSON.stringify({ ...config, goal: { ...config.goal, prompt: customized } }),
+      'utf8'
+    );
+    expect((await loadConfig()).goal.prompt).toBe(customized);
+  });
+
+  /**
+   * Migration compares against every default ever shipped, not just the one before this.
+   *
+   * The single-predecessor check this replaced stranded anyone who had skipped a release:
+   * their untouched prompt matched neither the current default nor its immediate predecessor,
+   * so it was mistaken for a customization and kept forever.
+   */
+  it('upgrades an untouched default from any earlier version, not just the last one', async () => {
+    const { SUPERSEDED_GOAL_SYSTEM_PROMPTS } = await import('../src/shared/goal.js');
+    const config = defaultConfig();
+    for (const superseded of SUPERSEDED_GOAL_SYSTEM_PROMPTS) {
+      await fs.writeFile(
+        path.join(dir, 'config.json'),
+        JSON.stringify({ ...config, goal: { ...config.goal, prompt: superseded } }),
+        'utf8'
+      );
+      expect((await loadConfig()).goal.prompt).toBe(defaultConfig().goal.prompt);
+    }
+  });
+
+  /**
+   * The driver and the loop are persisted and editable exactly as the gate is.
+   *
+   * They were migrated by nothing at all until the requirements rewrite, so an install holding
+   * either one verbatim would have kept a superseded instruction forever while the shipped
+   * constant moved on — the same stranding the gate's list exists to prevent.
+   */
+  it('upgrades an untouched driver and loop prompt too, not only the gate', async () => {
+    const { SUPERSEDED_GOAL_OBJECTIVE_SYSTEM_PROMPTS, SUPERSEDED_GOAL_LOOP_SYSTEM_PROMPTS } =
+      await import('../src/shared/goal.js');
+    const config = defaultConfig();
+
+    for (const superseded of SUPERSEDED_GOAL_OBJECTIVE_SYSTEM_PROMPTS) {
+      await fs.writeFile(
+        path.join(dir, 'config.json'),
+        JSON.stringify({ ...config, goal: { ...config.goal, objectivePrompt: superseded } }),
+        'utf8'
+      );
+      expect((await loadConfig()).goal.objectivePrompt).toBe(defaultConfig().goal.objectivePrompt);
+    }
+
+    for (const superseded of SUPERSEDED_GOAL_LOOP_SYSTEM_PROMPTS) {
+      await fs.writeFile(
+        path.join(dir, 'config.json'),
+        JSON.stringify({ ...config, goal: { ...config.goal, loopPrompt: superseded } }),
+        'utf8'
+      );
+      expect((await loadConfig()).goal.loopPrompt).toBe(defaultConfig().goal.loopPrompt);
+    }
+  });
+
+  it('moves all three untouched ChatGPT-edition defaults to the DeepSeek wording, and keeps edited ones', async () => {
+    const config = defaultConfig();
+    const named = (prompt: string) => prompt.replace('Your job is to prompt DeepSeek.', 'Your job is to prompt ChatGPT.');
+    const goal = { ...config.goal, prompt: named(config.goal.prompt), objectivePrompt: named(config.goal.objectivePrompt), loopPrompt: `${named(config.goal.loopPrompt)}\nmine` };
+    expect(goal.prompt).toContain('prompt ChatGPT.');
+    await fs.writeFile(path.join(dir, 'config.json'), JSON.stringify({ ...config, goal }), 'utf8');
+    const loaded = await loadConfig();
+    expect(loaded.goal.prompt).toBe(config.goal.prompt);
+    expect(loaded.goal.objectivePrompt).toBe(config.goal.objectivePrompt);
+    expect(loaded.goal.loopPrompt).toBe(goal.loopPrompt);
+  });
+
+  it('keeps a customized driver or loop prompt that merely starts like a shipped one', async () => {
+    const { SUPERSEDED_GOAL_OBJECTIVE_SYSTEM_PROMPTS, SUPERSEDED_GOAL_LOOP_SYSTEM_PROMPTS } =
+      await import('../src/shared/goal.js');
+    const config = defaultConfig();
+    const objectivePrompt = `${SUPERSEDED_GOAL_OBJECTIVE_SYSTEM_PROMPTS[0]}\ncustom sentence`;
+    const loopPrompt = `${SUPERSEDED_GOAL_LOOP_SYSTEM_PROMPTS[0]}\ncustom sentence`;
+    await fs.writeFile(
+      path.join(dir, 'config.json'),
+      JSON.stringify({ ...config, goal: { ...config.goal, objectivePrompt, loopPrompt } }),
+      'utf8'
+    );
+    const loaded = await loadConfig();
+    expect(loaded.goal.objectivePrompt).toBe(objectivePrompt);
+    expect(loaded.goal.loopPrompt).toBe(loopPrompt);
+  });
+
+  it('repairs a blank goal driver prompt to its shipped default', async () => {
+    const config = defaultConfig();
+    await fs.writeFile(
+      path.join(dir, 'config.json'),
+      JSON.stringify({ ...config, goal: { ...config.goal, objectivePrompt: '   ' } }),
+      'utf8'
+    );
+    expect((await loadConfig()).goal.objectivePrompt).toBe(defaultConfig().goal.objectivePrompt);
+  });
+
+  /**
+   * The id is free text from a provider listing that changes weekly. A config that lost it
+   * still has every root and permission in it, and losing those to a blank string would be
+   * a far worse failure than starting the picker back at its default.
+   */
+  it('repairs a blank model id rather than refusing the whole config', async () => {
+    const config = defaultConfig();
+    await fs.writeFile(
+      path.join(dir, 'config.json'),
+      JSON.stringify({ ...config, goal: { enabled: true, model: '   ', reasoning: 'low' } }),
+      'utf8'
+    );
+    const loaded = await loadConfig();
+    expect(loaded.goal.model).toBe(DEFAULT_GOAL_MODEL);
+    expect(loaded.goal.prompt).toBe(defaultConfig().goal.prompt);
+    expect(loaded.goal.enabled).toBe(true);
+    expect(loaded.roots).toEqual(config.roots);
+  });
+
+  it('defaults Goal tool context off for old configs and preserves an explicit opt-in', async () => {
+    const config = defaultConfig();
+    expect(config.goal.includeToolCalls).toBe(false);
+    const { includeToolCalls: omitted, ...oldGoal } = config.goal;
+    await fs.writeFile(path.join(dir, 'config.json'), JSON.stringify({ ...config, goal: oldGoal }), 'utf8');
+    expect((await loadConfig()).goal.includeToolCalls).toBe(false);
+    await saveConfig({ ...config, goal: { ...config.goal, includeToolCalls: true } });
+    expect((await loadConfig()).goal.includeToolCalls).toBe(true);
+  });
+
+  it('adds the section to a config written before the loop existed', async () => {
+    const before = defaultConfig() as unknown as Record<string, unknown>;
+    const { goal: _dropped, ...withoutGoal } = before;
+    await fs.writeFile(path.join(dir, 'config.json'), JSON.stringify(withoutGoal), 'utf8');
+    expect((await loadConfig()).goal).toEqual({
+      backend: 'chatgpt',
+      loopBackend: 'chatgpt',
+      includeToolCalls: false,
+      impulseMinutes: 0,
+      helperModel: 'deepseek-flash',
+      helperReasoning: 'high',
+      reviewerModel: '',
+      enabled: false,
+      mode: 'goal',
+      provider: { kind: 'openrouter', baseUrl: '' },
+      model: DEFAULT_GOAL_MODEL,
+      reasoning: 'default',
+      prompt: defaultConfig().goal.prompt,
+      objectivePrompt: defaultConfig().goal.objectivePrompt,
+      loopPrompt: defaultConfig().goal.loopPrompt
+    });
+  });
+
+  /**
+   * Loop is the mode that cannot stop on its own, so a blank instruction here would be an
+   * unconstrained model typing into somebody's chat for ever. Repaired like the other two.
+   */
+  it('repairs a blank loop prompt rather than running the loop with no instruction', async () => {
+    const config = defaultConfig();
+    await fs.writeFile(
+      path.join(dir, 'config.json'),
+      JSON.stringify({ ...config, goal: { ...config.goal, enabled: true, mode: 'loop', loopPrompt: '   ' } }),
+      'utf8'
+    );
+    const loaded = await loadConfig();
+    expect(loaded.goal.loopPrompt).toBe(defaultConfig().goal.loopPrompt);
+    expect(loaded.goal.mode).toBe('loop');
+  });
+
+  /**
+   * The mode is one word out of a file holding every root and permission this app has. A
+   * version that knows a third mode must not cost the rest of it a trip through recovery.
+   */
+  it('repairs an unknown mode without discarding the config around it', async () => {
+    const config = defaultConfig();
+    await fs.writeFile(
+      path.join(dir, 'config.json'),
+      JSON.stringify({
+        ...config,
+        roots: [{ name: 'project', path: 'C:\\Users\\example\\project' }],
+        goal: { ...config.goal, enabled: true, mode: 'swarm' }
+      }),
+      'utf8'
+    );
+    const loaded = await loadConfig();
+    expect(loaded.goal.mode).toBe('goal');
+    expect(loaded.goal.enabled).toBe(true);
+    expect(loaded.roots).toEqual([{ name: 'project', path: 'C:\\Users\\example\\project' }]);
+  });
+
+  it('repairs a blank prompt to the safe continuation-gate default', async () => {
+    const config = defaultConfig();
+    await fs.writeFile(path.join(dir, 'config.json'), JSON.stringify({ ...config, goal: { ...config.goal, prompt: '   ' } }), 'utf8');
+    expect((await loadConfig()).goal.prompt).toBe(defaultConfig().goal.prompt);
+  });
+
+  it('repairs an invalid prompt without discarding unrelated settings', async () => {
+    const config = {
+      ...defaultConfig(),
+      roots: [{ name: 'project', path: 'C:\\Users\\example\\project' }]
+    };
+    await fs.writeFile(
+      path.join(dir, 'config.json'),
+      JSON.stringify({ ...config, goal: { ...config.goal, prompt: 'x'.repeat(20_001) } }),
+      'utf8'
+    );
+    const loaded = await loadConfig();
+    expect(loaded.goal.prompt).toBe(defaultConfig().goal.prompt);
+    expect(loaded.roots).toEqual(config.roots);
+  });
+
+  /** Corruption is not consent here either: a broken file must not switch the loop on. */
+  it('leaves the loop off when the config cannot be read', async () => {
+    await fs.writeFile(path.join(dir, 'config.json'), '{ definitely-not-json', 'utf8');
+    expect((await loadConfig()).goal.enabled).toBe(false);
+  });
+
+  /** An unknown reasoning level is somebody else's vocabulary, not a level to guess at. */
+  it('falls back rather than passing an unknown reasoning level to OpenRouter', async () => {
+    const config = defaultConfig();
+    await fs.writeFile(
+      path.join(dir, 'config.json'),
+      JSON.stringify({ ...config, goal: { enabled: true, model: 'x/y', reasoning: 'extreme' } }),
+      'utf8'
+    );
+    expect((await loadConfig()).goal.reasoning).toBe('default');
+  });
+});
+
+
+it.each(REASONING_EFFORTS)('retains canonical worker/helper effort %s across settings save and reload', async effort => {
+  const config = defaultConfig();
+  config.multiAgent.defaultReasoning = effort;
+  config.goal.helperReasoning = effort;
+  await saveConfig(config);
+  const loaded = await loadConfig();
+  expect(loaded.multiAgent.defaultReasoning).toBe(effort);
+  expect(loaded.goal.helperReasoning).toBe(effort);
+});
+
+it('persists optional ordinary new-chat model defaults without inventing them for legacy config', async () => {
+  const config = defaultConfig();
+  expect(config.ui.defaultChatModel).toBeUndefined();
+  expect(config.ui.defaultChatReasoning).toBeUndefined();
+  Object.assign(config.ui, { defaultChatModel: 'gpt-5.6-sol', defaultChatReasoning: 'xhigh' });
+  await saveConfig(config);
+  const loaded = await loadConfig();
+  expect(loaded.ui.defaultChatModel).toBe('gpt-5.6-sol');
+  expect(loaded.ui.defaultChatReasoning).toBe('xhigh');
+});
+
+it('keeps a Continue prompt, and reads an empty or overlong one as the built-in phrases', async () => {
+  const config = defaultConfig();
+  expect(config.ui.customContinue).toBeUndefined();
+  for (const [stored, read] of [['Keep going.', 'Keep going.'], ['   ', undefined], ['x'.repeat(501), undefined], [42, undefined]] as const) {
+    await saveConfig({ ...config, ui: { ...config.ui, customContinue: stored as string } });
+    expect((await loadConfig()).ui.customContinue, String(stored).slice(0, 20)).toBe(read);
+  }
+});
+
+describe('a settings file the app cannot read as is', () => {
+  // VM test, 2026-10-06: Windows PowerShell 5.1 wrote config.json with a byte-order mark. The app
+  // fell back to recovery defaults and the next settings save overwrote the user's folders and tunnel.
+  const file = () => path.join(dir, 'config.json');
+  const backups = async () => (await fs.readdir(dir)).filter(name => name.startsWith('config.json.unreadable-'));
+  const clearBackups = async () => { for (const name of await backups()) await fs.rm(path.join(dir, name)); };
+
+  it('reads a file that starts with a byte-order mark like any other', async () => {
+    await clearBackups();
+    const config = { ...defaultConfig(), roots: [{ name: 'project', path: dir }] };
+    await fs.writeFile(file(), '﻿' + JSON.stringify(config), 'utf8');
+    const loaded = await loadConfig();
+    expect(loaded.roots.map(root => root.name)).toEqual(['project']);
+    expect(await backups()).toEqual([]);
+  });
+
+  it('keeps every other setting when a preference holds a value this version does not know', async () => {
+    // VM, 2026-10-15: 2.1.37 read settings 2.1.38 had saved with Firefox as the DeepSeek browser.
+    // The one unknown value made the whole file unusable, and the app started without its folders
+    // and tunnel. A preference this version cannot read now falls back to its default alone.
+    await clearBackups();
+    const config = { ...defaultConfig(), roots: [{ name: 'project', path: dir }],
+      ui: { ...defaultConfig().ui, chatBrowser: 'netscape', theme: 'light', backgroundPlacement: 'shelf' } };
+    const content = JSON.stringify(config);
+    await fs.writeFile(file(), content, 'utf8');
+    const loaded = await loadConfig();
+    expect(loaded.roots.map(root => root.name)).toEqual(['project']);
+    expect(loaded.readOnly).toBe(config.readOnly);
+    expect(loaded.ui.theme).toBe('light');
+    expect(loaded.ui.chatBrowser).toBe('cos');
+    expect(loaded.ui.backgroundPlacement).toBe('window');
+    // The original stays beside it, as for any file the app could not take as is.
+    const saved = await backups();
+    expect(saved).toHaveLength(1);
+    expect(await fs.readFile(path.join(dir, saved[0]!), 'utf8')).toBe(content);
+  });
+
+  it.each([
+    ['broken JSON', '{"roots": ['],
+    ['the wrong shape', JSON.stringify({ roots: 'not a list' })]
+  ])('keeps a copy of a file with %s before anything can overwrite it', async (_label, content) => {
+    await clearBackups();
+    await fs.writeFile(file(), content, 'utf8');
+    const loaded = await loadConfig();
+    expect(loaded.readOnly).toBe(true);
+    const saved = await backups();
+    expect(saved).toHaveLength(1);
+    expect(await fs.readFile(path.join(dir, saved[0]!), 'utf8')).toBe(content);
+  });
+});
+
+// CodeRabbit on #1864: a damaged ask-before-mouse-and-keyboard choice keeps asking (always) and says so;
+// a missing one is the default, off; a saved one loads as it was.
+it('loads a damaged desktop ask choice as always, a missing one as off, and says so once', async () => {
+  const logger = await import('../src/main/logger.js');
+  const warn = vi.spyOn(logger, 'logWarn');
+  const lines = () => warn.mock.calls.map(call => String(call[0])).filter(line => line.includes('desktopAsk'));
+  for (const [saved, loadedAs] of [['active', 'active'], ['off', 'off'], ['always', 'always'], [undefined, undefined]] as const) {
+    await fs.writeFile(path.join(dir, 'config.json'), JSON.stringify({ ...defaultConfig(), ui: { ...defaultConfig().ui, desktopAsk: saved } }), 'utf8');
+    warn.mockClear();
+    expect((await loadConfig()).ui.desktopAsk).toBe(loadedAs);
+    expect(lines()).toEqual([]);
+  }
+  for (const damaged of ['sometimes', 3, null, { off: true }]) {
+    await fs.writeFile(path.join(dir, 'config.json'), JSON.stringify({ ...defaultConfig(), ui: { ...defaultConfig().ui, desktopAsk: damaged } }), 'utf8');
+    warn.mockClear();
+    expect((await loadConfig()).ui.desktopAsk).toBe('always');
+    expect(lines()).toEqual(['config: the saved ui.desktopAsk was damaged; the app asks before every desktop step until it is chosen again']);
+  }
+  warn.mockRestore();
+});
+
+// #1856 (CodeRabbit): a damaged saved chat style falls back to the built-in text and says so once, never its content.
+it('logs a damaged saved chat style without its text, and nothing for an absent one', async () => {
+  const logger = await import('../src/main/logger.js');
+  const warn = vi.spyOn(logger, 'logWarn');
+  const { MAX_CHAT_STYLE_CHARS } = await import('../src/shared/chat-style.js');
+  // On disk, as a damaged file has it: saveConfig would already drop the value before writing.
+  await fs.writeFile(path.join(dir, 'config.json'), JSON.stringify({ ...defaultConfig(),
+    ui: { ...defaultConfig().ui, chatPersonality: 'secret-ish ' + 'x'.repeat(MAX_CHAT_STYLE_CHARS) } }), 'utf8');
+  warn.mockClear();
+  const loaded = await loadConfig();
+  expect(loaded.ui.chatPersonality).toBeUndefined();
+  const lines = warn.mock.calls.map(call => String(call[0])).filter(line => line.includes('chatPersonality'));
+  expect(lines).toEqual(['config: the saved ui.chatPersonality was damaged (too long); new chats use the built-in text']);
+  expect(lines.join()).not.toContain('secret-ish');
+  warn.mockClear();
+  await saveConfig(defaultConfig());
+  await loadConfig();
+  expect(warn.mock.calls.filter(call => String(call[0]).includes('chatPersonality'))).toEqual([]);
+  warn.mockRestore();
+});
+

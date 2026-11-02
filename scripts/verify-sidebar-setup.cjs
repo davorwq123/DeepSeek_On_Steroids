@@ -1,0 +1,348 @@
+// Isolated renderer/Chromium acceptance. No backend, provider, credentials or pairing.
+if (!process.versions.electron) {
+  const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
+  const result = require('node:child_process').spawnSync(require('electron'), [__filename],
+    { env, encoding: 'utf8', windowsHide: true });
+  process.stdout.write(result.stdout || ''); process.stderr.write(result.stderr || '');
+  process.exit(result.status ?? 1);
+}
+const { withoutScripts } = require('./ui-check-page.cjs');
+const { app, BrowserWindow } = require('electron');
+const fs = require('node:fs');
+const path = require('node:path');
+const assert = require('node:assert/strict');
+const root = path.resolve(__dirname, '..');
+const { fixtureConfigSource } = require('./fixtures/app-defaults.cjs');
+const output = path.join(root, 'outputs/sidebar-setup');
+app.setPath('userData', path.join(output, 'runtime'));
+app.whenReady().then(async () => {
+  const { createServer } = await import('vite');
+  const fixture = `
+    if (new URL(location.href).searchParams.has('reset')) localStorage.removeItem('chat-on-steroids.sidebar-order');
+    localStorage.removeItem('cos.ui.language');
+    ${fixtureConfigSource()}
+    const config = fixtureConfig({
+      roots: [{name:'demo',path:'C:/demo'}], readOnly:true,
+      capabilities: {browse:true,search:true,read:true,metadata:true,create:false,edit:false,move:false,deleteFile:false,command:false,screen:false,control:false,clipboardRead:false,clipboardWrite:false},
+      tunnel: {kind:'openai',tunnelId:'',desktopTunnelId:'',binaryPath:''},
+      ui: {minimizeToTray:true,autoConnect:false,privacyScreenshots:false,theme:'dark'},
+      sessions: {record:true,retainDays:30,advisoryTokens:300000,limitTokens:400000}, compaction:{auto:true,autoTokens:300000},
+      multiAgent:{enabled:false,maxWorkers:2,allowUnattributedCalls:false,recoverAgentTabs:false},
+      goal:{enabled:false,model:'fixture',reasoning:'default',prompt:'Fixture'}
+    });
+    const state = {config,hasApiKey:false,hasGoalKey:false,resolvedBinary:null,bundledTunnelVersion:null,
+      status:{state:'disconnected',detail:'',publicUrl:null,localUrl:null,handshakeAt:null,lastRequestAt:null,lastToolCallAt:null,health:null,surfaces:[]},
+      bridge:{running:false,port:0,paired:false,present:false,lastSeenAt:null,extensionVersion:null},
+      update:{current:'2.0.9',latest:null,stage:'idle',error:null,checkedAt:null}};
+    const project = {id:'demo-project',name:'VideoClipper',path:'C:/demo',createdAt:1};
+    const projects = [project, {id:'second-project',name:'Documentation',path:'C:/docs',createdAt:2}];
+    const rows = Array.from({length:22},(_,i)=>({id:'task-'+i,title:'Project chat '+(i+1),projectId:project.id,
+      conversationId:'chat-'+i,chatIds:['chat-'+i],startedAt:1,updatedAt:100-i,endedAt:2,events:0,userMessages:0,
+      toolCalls:0,lastToolCallAt:null,processExitNonzero:0,toolRejected:0,toolInternalErrors:0,errors:0,
+      estimatedTokens:0,contextTokens:0,lastHandoffId:null,lastHandoffAt:null,lastTurnOutcome:null,activeTurnId:null,agents:[],origin:null}));
+    const ok=data=>Promise.resolve({ok:true,data});
+    window.api = new Proxy({ getState:()=>ok(state),getLog:()=>ok([]),
+      listProjects:()=>ok(projects),listSessions:options=>{
+        // ?older=1: the second project also has a chat older than the newest page, which only its own page returns (#1190).
+        const older = new URL(location.href).searchParams.has('older') && options?.projectId === 'second-project';
+        const page = older ? [{...rows[0],id:'older-task',title:'Earlier project chat',projectId:'second-project',updatedAt:1}] : options?.projectId ? [] : rows;
+        return ok({sessions:page,total:22,nextCursor:null,activeId:null,pressure:[],blocked:[]});
+      },
+      setProjectColor:(id,color)=>{const value=projects.find(row=>row.id===id);if(!value)return Promise.resolve({ok:false,error:'Project not found'});if(color)value.color=color;else delete value.color;return ok({...value})},
+      getSwarm:()=>ok({running:false,runId:null,agents:[],maxWorkers:2,pendingReports:0}),
+      getChatModels:()=>ok({state:'unknown',models:[]}),
+      saveSettings:patch=>{state.config={...state.config,...patch};return ok(state)},
+      addSetupProfile:name=>{
+        const previous={id:config.tunnel.profileId??'default',name:config.tunnel.profileName??'Default',tunnelId:'',desktopTunnelId:'',pluginsTunnelId:''};
+        config.setupProfiles=[...(config.setupProfiles??[]),previous];
+        config.tunnel={...config.tunnel,profileId:'fixture-profile',profileName:name,profileEpoch:(config.tunnel.profileEpoch??0)+1};
+        return ok(state);
+      },
+      removeSetupProfile:id=>{config.setupProfiles=config.setupProfiles.filter(p=>p.id!==id);return ok(state)}
+    },{get:(target,key)=>key in target?target[key]:()=>ok(null)});
+    await import('/main.ts');
+    const still=document.createElement('style'); still.textContent='*,*::before,*::after{animation:none!important;transition:none!important}'; document.head.append(still);
+    window.fixtureReady=true;
+  `;
+  // A verification worktree may share dependencies through a junction. Permit only the two
+  // actual icon assets outside this checkout; never publish a missing-glyph screenshot as proof.
+  const iconFiles = ['@phosphor-icons/web/regular/Phosphor.woff2', '@phosphor-icons/web/fill/Phosphor-Fill.woff2']
+    .map(file => fs.realpathSync(require.resolve(file)));
+  const server = await createServer({ configFile:false, root:path.join(root,'src/renderer'),
+    server:{host:'127.0.0.1',port:0,fs:{allow:[root,...iconFiles]}}, plugins:[{ name:'sidebar-fixture', configureServer(vite) {
+      vite.middlewares.use('/fixture.html', async (_request,response) => {
+        const source = withoutScripts(fs.readFileSync(path.join(root,'src/renderer/index.html'),'utf8')).replace('</body>', '<script type="module">'+fixture+'</script></body>');
+        response.setHeader('Content-Type','text/html'); response.end(await vite.transformIndexHtml('/fixture.html',source));
+      });
+    }}] });
+  let win;
+  try {
+    await server.listen(); fs.mkdirSync(output,{recursive:true});
+    win = new BrowserWindow({show:false,width:1100,height:900,webPreferences:{sandbox:true,backgroundThrottling:false}});
+    await win.loadURL(server.resolvedUrls.local[0]+'fixture.html?reset=1');
+    win.webContents.setZoomFactor(1);
+    const js = code=>win.webContents.executeJavaScript(code);
+    const screenshot = async name => {
+      await win.webContents.capturePage(undefined,{stayHidden:true,stayAwake:true});
+      await new Promise(r=>setTimeout(r,200));
+      fs.writeFileSync(path.join(output,name),(await win.webContents.capturePage(undefined,{stayHidden:true,stayAwake:true})).toPNG());
+    };
+    for(let i=0;i<100 && !(await js('!!window.fixtureReady && document.querySelectorAll(".project-group > .sess").length === 5'));i++) await new Promise(r=>setTimeout(r,25));
+    assert.equal(await js(`Promise.all(['CoS Phosphor','CoS Phosphor Fill'].map(name=>document.fonts.load('16px "'+name+'"'))).then(faces=>faces.every(face=>face.length>0))`),true,
+      'The actual bundled icon faces must load before visual evidence is captured');
+    // The list's scrollbar room stays reserved: rows keep their width whether or not the list
+    // needs a scrollbar (a project filter or collapsed sections made the Inbox toolbar jump).
+    const headingRight = () => js(`Math.round(document.querySelector('.project-heading').getBoundingClientRect().right)`);
+    const shortList = await headingRight();
+    await js(`(() => {const s=document.querySelector('.sidebar-sessions > .scroll');const spacer=document.createElement('div');spacer.id='overflowSpacer';spacer.style.height='4000px';s.append(spacer);return s.scrollHeight>s.clientHeight})()`);
+    const longList = await headingRight();
+    await js(`document.getElementById('overflowSpacer').remove()`);
+    assert.equal(longList, shortList, 'A scrolling chat list keeps the width of a short one');
+    await js(`window.disclosureEvents=[]; for(const type of ['keydown','keypress','keyup','click']) document.addEventListener(type,e=>window.disclosureEvents.push({type,key:e.key,tag:e.target.tagName,cls:e.target.className,open:document.querySelector('.project-group')?.open}),true)`);
+    // Project groups start closed. Exercise native summary activation before the
+    // existing visible-row geometry, drag ordering and pagination checks.
+    assert.equal(await js(`document.querySelector('.project-group').open`), false);
+    await js('new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))');
+    const headingPoint = await js(`(() => {const r=document.querySelector('.project-heading').getBoundingClientRect();return {x:Math.round(r.left+35),y:Math.round(r.top+r.height/2)}})()`);
+    const expectDisclosure = async open => {
+      for (let i=0;i<100;i++) {
+        if (await js(`document.querySelector('.project-group').open === ${open}`)) return;
+        await new Promise(r=>setTimeout(r,10));
+      }
+      assert.equal(await js(`document.querySelector('.project-group').open`),open,
+        JSON.stringify(await js(`({focus:document.activeElement.outerHTML.slice(0,250),events:window.disclosureEvents.slice(-12)})`)));
+    };
+    win.webContents.sendInputEvent({type:'mouseDown',button:'left',clickCount:1,...headingPoint});
+    win.webContents.sendInputEvent({type:'mouseUp',button:'left',clickCount:1,...headingPoint});
+    await expectDisclosure(true);
+    // The disclosure click above leaves the real pointer hovering the heading, which intentionally
+    // reveals its otherwise-quiet controls, and summary activation can retain focus too. Clear both
+    // before checking the idle baseline; hover/focus are separately intended to reveal the control.
+    win.webContents.sendInputEvent({type:'mouseMove',x:1090,y:890});
+    await js('document.activeElement?.blur(); new Promise(r=>requestAnimationFrame(r))');
+    // Two quiet buttons on the project row: the new chat, then one "⋯" whose menu holds color and removal.
+    assert.equal(await js(`document.querySelector('.project-group').dataset.projectColor`),undefined);
+    assert.equal(await js(`getComputedStyle(document.querySelector('.project-menu')).opacity`),'0');
+    assert.equal(await js(`getComputedStyle(document.querySelector('.project-new')).opacity`),'0');
+    assert.deepEqual(await js(`[...document.querySelector('.project-heading').querySelectorAll('button')].map(b=>b.classList.contains('project-new')?'new':b.classList.contains('project-menu')?'menu':b.className)`),['new','menu']);
+    const press=keyCode=>{for (const type of ['keyDown','char','keyUp']) if (type!=='char'||keyCode==='Enter') win.webContents.sendInputEvent({type,keyCode:type==='char'?'\r':keyCode});};
+    await js(`document.querySelector('.project-menu').click()`);
+    assert.equal(await js(`document.querySelector('.project-menu').getAttribute('aria-expanded')`),'true');
+    // The menu and its submenu stay inside the window: the old color popup was cut by the sidebar.
+    await js(`document.querySelector('.row-menu [data-row-action="color"]').focus()`);
+    press('Right');
+    for(let i=0;i<100 && await js(`document.querySelectorAll('.row-menu').length!==2`);i++) await new Promise(r=>setTimeout(r,10));
+    const fits=await js(`[...document.querySelectorAll('.row-menu')].map(m=>{const r=m.getBoundingClientRect();return r.left>=0&&r.top>=0&&r.right<=innerWidth&&r.bottom<=innerHeight})`);
+    assert.deepEqual(fits,[true,true],'The menu and its Color submenu fit in the window');
+    // Every language's label fits: each item shows its translation in turn in the real menu, which
+    // may grow to its maximum width before a label is cut ("Geheimnisse vor ChatGPT verbergen" was).
+    const catalogs=Object.fromEntries(fs.readdirSync(path.join(root,'src/renderer/locales')).filter(f=>f.endsWith('.json'))
+      .map(f=>[f.slice(0,-5),JSON.parse(fs.readFileSync(path.join(root,'src/renderer/locales',f),'utf8'))]));
+    const cut=await js(`(${(catalogs=>{
+      const out=[];
+      for (const label of document.querySelector('.row-menu').querySelectorAll('.row-menu-label')) {
+        const shown=label.textContent;
+        // The page may already be in another language: find the English key of what it shows.
+        const english=Object.values(catalogs).flatMap(catalog=>Object.entries(catalog)).find(([,text])=>text===shown)?.[0] ?? shown;
+        for (const [language,catalog] of [['en',{[english]:english}],...Object.entries(catalogs)]) {
+          const text=catalog[english];
+          if (!text) continue;
+          label.textContent=text;
+          if (label.scrollWidth>label.clientWidth+1) out.push(`${language}: ${text}`);
+        }
+        label.textContent=shown;
+      }
+      return out;
+    }).toString()})(${JSON.stringify(catalogs)})`);
+    assert.deepEqual(cut,[],'A project menu label is cut in another language');
+    assert.equal(await js(`document.activeElement.dataset.rowAction`),'color-none','The submenu opens on the current color');
+    await screenshot('project-menu-color.png');
+    press('Down');
+    // Input events are handled asynchronously; a slow runner read the focus before the key landed.
+    for(let i=0;i<100 && await js(`document.activeElement.dataset.rowAction==='color-none'`);i++) await new Promise(r=>setTimeout(r,10));
+    assert.equal(await js(`document.activeElement.dataset.rowAction`),'color-blue');
+    press('Enter');
+    for(let i=0;i<100 && await js(`document.querySelector('.project-group').dataset.projectColor!=='blue'`);i++) await new Promise(r=>setTimeout(r,10));
+    assert.equal(await js(`document.querySelector('.project-group').dataset.projectColor`),'blue');
+    assert.equal(await js(`getComputedStyle(document.querySelector('.project-heading > .ico')).color`),'rgb(76, 127, 193)','The folder wears the project color');
+    assert.equal(await js(`document.querySelectorAll('.row-menu').length`),0);
+    await screenshot('project-color-blue.png');
+    assert.equal(await js(`document.activeElement===document.querySelector('.project-menu')`),true,
+      'Saving a keyboard-selected color must return focus to its project menu button');
+    // A later completion must not take focus back from a newer composer interaction.
+    await js(`window.originalColorSave=window.api.setProjectColor;
+      window.api.setProjectColor=(id,value)=>new Promise(resolve=>{window.completeColorSave=()=>window.originalColorSave(id,value).then(resolve)});
+      document.querySelector('.project-menu').click();
+      document.querySelector('.row-menu [data-row-action="color"]').click();
+      document.querySelector('.row-menu [data-row-action="color-green"]').focus()`);
+    press('Enter');
+    for(let i=0;i<100 && await js(`typeof window.completeColorSave!=='function'`);i++) await new Promise(r=>setTimeout(r,10));
+    assert.equal(await js(`typeof window.completeColorSave`),'function');
+    const composerPoint = await js(`(() => {const r=document.getElementById('chatInput').getBoundingClientRect();return {x:Math.round(r.left+20),y:Math.round(r.top+r.height/2)}})()`);
+    win.webContents.sendInputEvent({type:'mouseDown',button:'left',clickCount:1,...composerPoint});
+    win.webContents.sendInputEvent({type:'mouseUp',button:'left',clickCount:1,...composerPoint});
+    for(let i=0;i<100 && await js(`document.activeElement!==document.getElementById('chatInput')`);i++) await new Promise(r=>setTimeout(r,10));
+    assert.equal(await js(`document.activeElement===document.getElementById('chatInput')`),true);
+    await js(`window.completeColorSave()`);
+    for(let i=0;i<100 && await js(`document.querySelector('.project-group').dataset.projectColor!=='green'`);i++) await new Promise(r=>setTimeout(r,10));
+    assert.equal(await js(`document.querySelector('.project-group').dataset.projectColor`),'green');
+    await screenshot('project-color-newer-focus.png');
+    assert.equal(await js(`document.activeElement===document.getElementById('chatInput')`),true,
+      'A delayed color save must not steal focus from a newer composer interaction');
+    await js(`window.api.setProjectColor=window.originalColorSave;delete window.originalColorSave;delete window.completeColorSave`);
+    await js(`document.querySelector('.project-heading').focus()`);
+    for (const keyCode of ['Space','Enter']) {
+      win.webContents.sendInputEvent({type:'keyDown',keyCode});
+      // Enter's native summary activation uses the character event. Electron's
+      // low-level keyDown/keyUp pair does not synthesize that part of typing.
+      if (keyCode === 'Enter') win.webContents.sendInputEvent({type:'char',keyCode:'\r'});
+      win.webContents.sendInputEvent({type:'keyUp',keyCode});
+      await expectDisclosure(keyCode === 'Enter');
+    }
+    await js('new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))');
+    const geometry = await js(`(() => { const group=document.querySelector('.project-group');
+      const title=group.querySelector('.project-name').getBoundingClientRect(), chat=group.querySelector('.sess-top b').getBoundingClientRect();
+      return {title:title.left,chat:chat.left,count:group.querySelectorAll(':scope > .sess').length,color:getComputedStyle(document.getElementById('newChat')).color,
+        icon:[...document.querySelector('#newChat i.ico').classList].find(name => name.startsWith('ph-') && name !== 'ph')}; })()`);
+    assert.equal(geometry.count,5); assert.ok(Math.abs(geometry.title-geometry.chat)<1,JSON.stringify(geometry));
+    assert.equal(geometry.color,'rgb(255, 255, 255)'); assert.equal(geometry.icon,'ph-pencil-simple');
+    await js('new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))');
+    await new Promise(r=>setTimeout(r,200));
+    const points=await js(`[...document.querySelectorAll('.project-group > .sess')].map(row=>{const r=row.getBoundingClientRect();return {x:Math.round(r.left+35),y:Math.round(r.top+r.height/2)}})`);
+    win.webContents.sendInputEvent({type:'mouseDown',button:'left',clickCount:1,...points[0]});
+    await new Promise(r=>setTimeout(r,25));
+    win.webContents.sendInputEvent({type:'mouseMove',...points[2],y:points[2].y+12});
+    await new Promise(r=>setTimeout(r,40));
+    win.webContents.sendInputEvent({type:'mouseUp',button:'left',clickCount:1,...points[2],y:points[2].y+12});
+    await new Promise(r=>setTimeout(r,40));
+    const moved=await js(`[...document.querySelectorAll('.project-group > .sess')].map(row=>row.dataset.id)`);
+    assert.deepEqual(moved,['task-1','task-2','task-0','task-3','task-4']);
+    assert.equal(await js(`document.querySelector('.sess.is-sel') === null`),true);
+    await new Promise(r=>setTimeout(r,200));
+    await screenshot('sidebar.png');
+    win.webContents.setZoomFactor(1.17);
+    await js('new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))');
+    assert.equal(await js('document.documentElement.scrollWidth <= innerWidth'),true);
+    await screenshot('sidebar-base-zoom.png');
+    win.webContents.setZoomFactor(1);
+    await js(`document.querySelector('.project-show-more').click()`);
+    assert.equal(await js(`document.querySelectorAll('.project-group > .sess').length`),13);
+    await js(`document.querySelector('[data-tab="setup"]').click()`);
+    assert.equal(await js(`document.querySelector('[data-panel="setup"]').classList.contains('is-active')`),true);
+    // Setup is a stepped wizard, one step on screen at a time: there is no guide to collapse.
+    assert.equal(await js(`!!document.querySelector('#wizard > li.step.is-current')`),true);
+    assert.equal(await js(`document.querySelector('[data-panel="setup"]').contains(document.getElementById('setupProfile'))`),false);
+    await new Promise(r=>setTimeout(r,200));
+    await screenshot('setup-clean.png');
+    await js(`document.querySelector('[data-tab="appearance"]').click(); document.getElementById('uiLanguage').scrollIntoView({block:'center'});`);
+    for(const [width,zoom] of [[1100,1],[800,1],[1100,1.17],[800,1.17],[1100,1.5]]) {
+      win.setSize(width,900); win.webContents.setZoomFactor(zoom);
+      await js('new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))');
+      // Scroll, let a frame pass, then open: anchor fallbacks (flip-block) are chosen from the frame's
+      // scroll snapshot, so opening in the same task as the scroll could keep a stale "below" placement.
+      await js(`document.getElementById('setupProfile').scrollIntoView({block:'center'})`);
+      await js('new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))');
+      await js(`document.getElementById('setupProfile').click()`);
+      // A slow runner applies the menu's flip a frame or two after it opens (CI, 2026-10-26: measured
+      // below the viewport two frames in). Wait until its place holds still for two frames, at most ~30.
+      await js(`new Promise(r=>{const m=document.getElementById('setupProfileMenu');let last='',same=0,n=0;const tick=()=>{const b=m.getBoundingClientRect();const now=[b.top,b.left,b.bottom,b.right].join();same=now===last?same+1:0;last=now;if(same>=2||++n>=30)r();else requestAnimationFrame(tick);};requestAnimationFrame(tick);})`);
+      const profileBounds = await js(`(() => {const r=document.getElementById('setupProfileMenu').getBoundingClientRect();return {width:r.width,left:r.left,right:r.right,top:r.top,bottom:r.bottom,viewport:[innerWidth,innerHeight],open:document.getElementById('setupProfileMenu').matches(':popover-open')}})()`);
+      assert.ok(profileBounds.width>0 && profileBounds.right<=profileBounds.viewport[0] && profileBounds.left>=0 && profileBounds.top>=0 && profileBounds.bottom<=profileBounds.viewport[1],JSON.stringify({width,zoom,profileBounds}));
+      assert.equal(await js(`document.querySelector('[data-remove-profile-id]').disabled`),true);
+      await js(`document.getElementById('setupProfileMenu').hidePopover()`);
+    }
+    win.setSize(1100,900);win.webContents.setZoomFactor(1);
+    await js('new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))');
+    await js(`document.getElementById('setupProfileAdd').click()`);
+    assert.equal(await js(`document.getElementById('setupProfileDialog').open && document.activeElement.id==='setupProfileName'`),true);
+    await js(`document.getElementById('setupProfileName').value='Work';document.getElementById('setupProfileForm').requestSubmit()`);
+    for(let i=0;i<100 && await js(`document.getElementById('setupProfileDialog').open`);i++) await new Promise(r=>setTimeout(r,25));
+    assert.equal(await js(`document.getElementById('setupProfileCurrent').textContent`),'Work');
+    await js(`document.getElementById('setupProfile').scrollIntoView({block:'center'});document.getElementById('setupProfile').click()`);
+    assert.equal(await js(`document.querySelectorAll('[data-remove-profile-id]:not(:disabled)').length`),2);
+    const compactProfiles = await js(`(() => {
+      const menu = document.getElementById('setupProfileMenu').getBoundingClientRect();
+      const trigger = document.getElementById('setupProfile').getBoundingClientRect();
+      const rows = [...document.querySelectorAll('.setup-profile-option')].map(row => {
+        const choice = row.firstElementChild.getBoundingClientRect();
+        const remove = row.lastElementChild.getBoundingClientRect();
+        return {left:choice.left, choiceRight:choice.right, removeLeft:remove.left, removeRight:remove.right};
+      });
+      return {width:menu.width, right:menu.right, triggerWidth:trigger.width, triggerRight:trigger.right, rows};
+    })()`);
+    // settings.css sizes the menu at min(260px, 100vw - 32px) since the 2026-09-28 Settings polish.
+    assert.ok(compactProfiles.width >= compactProfiles.triggerWidth && compactProfiles.width <= 260, JSON.stringify(compactProfiles));
+    assert.ok(Math.abs(compactProfiles.right - compactProfiles.triggerRight) <= 1, JSON.stringify(compactProfiles));
+    for (const row of compactProfiles.rows) {
+      assert.ok(compactProfiles.right - row.removeRight <= 12, JSON.stringify(compactProfiles));
+      assert.ok(Math.abs(row.removeLeft - compactProfiles.rows[0].removeLeft) <= 1, JSON.stringify(compactProfiles));
+      assert.ok(row.choiceRight <= row.removeLeft, JSON.stringify(compactProfiles));
+    }
+    // Wake the hidden fixture's compositor before retaining the final frame.
+    await win.webContents.capturePage(undefined,{stayHidden:true,stayAwake:true});
+    await new Promise(r=>setTimeout(r,250));
+    fs.writeFileSync(path.join(output,'settings-profiles.png'),(await win.webContents.capturePage(undefined,{stayHidden:true,stayAwake:true})).toPNG());
+    const longProfile = await js(`(() => {
+      const choice = document.querySelector('.setup-profile-option > :first-child');
+      const text = choice.textContent; choice.textContent = 'Long-profile-'.repeat(6);
+      const menu = document.getElementById('setupProfileMenu');
+      const bounds = menu.getBoundingClientRect();
+      const label = choice.getBoundingClientRect();
+      const remove = choice.nextElementSibling.getBoundingClientRect();
+      const result = {width:bounds.width, left:bounds.left, right:bounds.right, viewport:innerWidth,
+        labelRight:label.right, removeLeft:remove.left, removeRight:remove.right,
+        overflow:menu.scrollWidth > menu.clientWidth + 1};
+      choice.textContent = text;
+      return result;
+    })()`);
+    assert.ok(longProfile.width <= 260 && longProfile.left >= 0 && longProfile.right <= longProfile.viewport, JSON.stringify(longProfile));
+    assert.ok(longProfile.labelRight <= longProfile.removeLeft && !longProfile.overflow, JSON.stringify(longProfile));
+    assert.ok(longProfile.right - longProfile.removeRight <= 12, JSON.stringify(longProfile));
+    win.webContents.sendInputEvent({type:'keyDown',keyCode:'Escape'});
+    win.webContents.sendInputEvent({type:'keyUp',keyCode:'Escape'});
+    await new Promise(r=>setTimeout(r,50));
+    assert.equal(await js(`document.getElementById('setupProfileMenu').matches(':popover-open')`),false);
+    await js(`const language=document.getElementById('uiLanguage');language.value='zh-CN';language.dispatchEvent(new Event('change'));document.getElementById('setupProfile').click()`);
+    assert.equal(await js(`document.getElementById('setupProfileLabel').textContent`),'连接配置');
+    assert.equal(await js(`document.getElementById('setupProfileCurrent').textContent`),'Work');
+    assert.equal(await js(`document.querySelector('[data-remove-profile-id="default"]').getAttribute('aria-label')`),'删除配置：Default');
+    await js(`document.querySelector('[data-remove-profile-id="default"]').click()`);
+    for(let i=0;i<100 && await js(`document.querySelectorAll('[data-remove-profile-id]').length!==1`);i++) await new Promise(r=>setTimeout(r,25));
+    assert.equal(await js(`document.querySelector('[data-remove-profile-id]').disabled`),true);
+    await js(`document.getElementById('newChat').click(); document.querySelector('[data-project-id="demo-project"] summary').click()`);
+    await js('new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))');
+    const projectPoints = await js(`[...document.querySelectorAll('.project-heading')].map(heading=>{const r=heading.getBoundingClientRect();return {x:Math.round(r.left+35),y:Math.round(r.top+r.height/2)}})`);
+    win.webContents.sendInputEvent({type:'mouseDown',button:'left',clickCount:1,...projectPoints[1]});
+    win.webContents.sendInputEvent({type:'mouseMove',...projectPoints[0],y:projectPoints[0].y-8});
+    win.webContents.sendInputEvent({type:'mouseUp',button:'left',clickCount:1,...projectPoints[0],y:projectPoints[0].y-8});
+    await js('new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))');
+    const projectOrder = `[...document.querySelectorAll('.project-group')].map(group=>group.dataset.projectId)`;
+    assert.deepEqual(await js(projectOrder),['second-project','demo-project']);
+    assert.equal(await js(`document.querySelectorAll('[data-project-id="demo-project"] > .sess').length`),13);
+    assert.equal(await js(`document.querySelector('.sess.is-sel') === null`),true);
+    await js(`document.querySelector('[data-project-id="second-project"] summary').focus()`);
+    for(const type of ['keyDown','keyUp']) win.webContents.sendInputEvent({type,keyCode:'Down',modifiers:['alt']});
+    await js('new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))');
+    assert.deepEqual(await js(projectOrder),['demo-project','second-project']);
+    assert.equal(await js(`document.activeElement.closest('.project-group').dataset.projectId`),'second-project');
+    for(const type of ['keyDown','keyUp']) win.webContents.sendInputEvent({type,keyCode:'Up',modifiers:['alt']});
+    await js('new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))');
+    assert.deepEqual(await js(projectOrder),['second-project','demo-project']);
+    await win.loadURL(server.resolvedUrls.local[0]+'fixture.html');
+    for(let i=0;i<100 && !(await js('!!window.fixtureReady && document.querySelectorAll(".project-group").length === 2'));i++) await new Promise(r=>setTimeout(r,25));
+    assert.deepEqual(await js(projectOrder),['second-project','demo-project']);
+    await screenshot('project-order-restored.png');
+    // A project's chats older than the newest page appear when it is expanded, and nothing gets selected.
+    await win.loadURL(server.resolvedUrls.local[0]+'fixture.html?reset=1&older=1');
+    for(let i=0;i<100 && !(await js('!!window.fixtureReady && document.querySelectorAll(".project-group").length === 2'));i++) await new Promise(r=>setTimeout(r,25));
+    assert.equal(await js(`document.querySelector('[data-id="older-task"]')===null`),true);
+    await screenshot('older-project-before.png');
+    await js(`document.querySelector('[data-project-id="second-project"] summary').click()`);
+    for(let i=0;i<100 && await js(`document.querySelector('[data-id="older-task"]')===null`);i++) await new Promise(r=>setTimeout(r,25));
+    assert.equal(await js(`document.querySelector('[data-project-id="second-project"]').open`),true);
+    assert.equal(await js(`document.querySelector('[data-project-id="second-project"] [data-id="older-task"]').textContent.includes('Earlier project chat')`),true);
+    assert.equal(await js(`document.querySelector('.sess.is-sel')===null`),true);
+    await screenshot('older-project-after.png');
+    console.log(JSON.stringify({projectDisclosure:{initiallyCollapsed:true,pointer:true,space:true,enter:true},geometry,drag:moved,projectOrder:{pointer:true,keyboard:true,restored:true},showMore:13,collapse:true,profileLayout:compactProfiles,longProfile,output}));
+  } finally { win?.destroy(); await server.close(); app.quit(); }
+}).catch(error=>{console.error(error);app.exit(1)});
